@@ -2,26 +2,25 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
+// Valores de produção — chave anon pública, seguro manter no código.
+const FALLBACK_URL = "https://cmmwqdyngvvikvcubqan.supabase.co";
+const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNtbXdxZHluZ3Z2aWt2Y3VicWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1MjI4NjMsImV4cCI6MjA5NDA5ODg2M30.ZMH_CLzrLIpDZuZbDMUrRLdyJGNSFypzuNcWbDImJns";
+
 function createSupabaseClient() {
-  // import.meta.env.VITE_* → substituído pelo Vite no bundle do cliente (build-time)
-  // process.env.VITE_*     → acessado em runtime no Cloudflare Workers via nodejs_compat
-  //                          (as variáveis devem ser cadastradas com prefixo VITE_ no painel)
+  // Ordem de resolução:
+  // 1. import.meta.env.VITE_* — injetado pelo Vite em build-time (quando a var está no env de build)
+  // 2. process.env.VITE_*     — runtime via nodejs_compat (quando mapeado pelo Workers)
+  // 3. Fallback hardcoded     — garante funcionamento no Cloudflare Workers onde nenhuma das
+  //                             opções acima está disponível (vars do wrangler.jsonc são bindings
+  //                             de runtime acessíveis via env.VAR, não via process.env)
   const SUPABASE_URL =
     import.meta.env.VITE_SUPABASE_URL ||
-    process.env.VITE_SUPABASE_URL;
+    process.env.VITE_SUPABASE_URL ||
+    FALLBACK_URL;
   const SUPABASE_PUBLISHABLE_KEY =
     import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
-    const missing = [
-      ...(!SUPABASE_URL ? ['VITE_SUPABASE_URL'] : []),
-      ...(!SUPABASE_PUBLISHABLE_KEY ? ['VITE_SUPABASE_PUBLISHABLE_KEY'] : []),
-    ];
-    const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Cadastre as variáveis no painel do Cloudflare Workers.`;
-    console.error(`[Supabase] ${message}`);
-    throw new Error(message);
-  }
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    FALLBACK_KEY;
 
   return createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     auth: {
