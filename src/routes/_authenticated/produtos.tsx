@@ -74,7 +74,11 @@ function Page() {
   const [importing, setImporting] = useState(false);
 
   const load = async () => {
-    const { data } = await supabase.from("produtos").select("*").order("titulo");
+    const { data } = await supabase
+      .from("produtos")
+      .select("*")
+      .order("categoria", { ascending: true, nullsFirst: false })
+      .order("titulo");
     setRows(data || []);
   };
   useEffect(() => { load(); }, []);
@@ -243,18 +247,37 @@ function Page() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.map(r => (
-              <TableRow key={r.id}>
-                <TableCell className="font-mono text-xs">{r.sku || "—"}</TableCell>
-                <TableCell className="font-medium">{r.titulo}</TableCell>
-                <TableCell>{[r.marca, r.modelo].filter(Boolean).join(" · ") || "—"}</TableCell>
-                <TableCell>{r.categoria || "—"}</TableCell>
-                <TableCell className="text-right">{brl(r.msrp)}</TableCell>
-                <TableCell>{r.status ? <span className="text-success">Ativo</span> : <span className="text-muted-foreground">Inativo</span>}</TableCell>
-                <TableCell><Button size="icon" variant="ghost" onClick={() => { setEdit(r); setForm({ ...empty, ...r }); setOpen(true); }}><Edit className="h-4 w-4" /></Button></TableCell>
-              </TableRow>
-            ))}
-            {filtered.length === 0 && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Nenhum produto.</TableCell></TableRow>}
+            {filtered.length === 0 && (
+              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Nenhum produto.</TableCell></TableRow>
+            )}
+            {(() => {
+              // Agrupa por categoria mantendo a ordem já vinda do banco (categoria → titulo)
+              const groups: { cat: string; items: typeof filtered }[] = [];
+              filtered.forEach(r => {
+                const cat = r.categoria || "Sem categoria";
+                const last = groups[groups.length - 1];
+                if (last && last.cat === cat) last.items.push(r);
+                else groups.push({ cat, items: [r] });
+              });
+              return groups.flatMap(({ cat, items }) => [
+                <TableRow key={`cat-${cat}`}>
+                  <TableCell colSpan={7} className="bg-muted/60 py-1.5 px-4 font-semibold text-xs uppercase tracking-wider text-muted-foreground">
+                    {cat}
+                  </TableCell>
+                </TableRow>,
+                ...items.map(r => (
+                  <TableRow key={r.id}>
+                    <TableCell className="font-mono text-xs">{r.sku || "—"}</TableCell>
+                    <TableCell className="font-medium">{r.titulo}</TableCell>
+                    <TableCell>{[r.marca, r.modelo].filter(Boolean).join(" · ") || "—"}</TableCell>
+                    <TableCell>{r.categoria || "—"}</TableCell>
+                    <TableCell className="text-right">{brl(r.msrp)}</TableCell>
+                    <TableCell>{r.status ? <span className="text-green-600">Ativo</span> : <span className="text-muted-foreground">Inativo</span>}</TableCell>
+                    <TableCell><Button size="icon" variant="ghost" onClick={() => { setEdit(r); setForm({ ...empty, ...r }); setOpen(true); }}><Edit className="h-4 w-4" /></Button></TableCell>
+                  </TableRow>
+                )),
+              ]);
+            })()}
           </TableBody>
         </Table>
       </Card>

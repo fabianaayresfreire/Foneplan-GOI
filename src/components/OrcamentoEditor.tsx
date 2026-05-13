@@ -90,7 +90,8 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
 
   // Dialog states
   const [clienteDlg, setClienteDlg] = useState(false);
-  const [clienteForm, setClienteForm] = useState({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "" });
+  const [arqs, setArqs] = useState<any[]>([]);
+  const [clienteForm, setClienteForm] = useState({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" });
   const [savingCliente, setSavingCliente] = useState(false);
 
   const [segDlg, setSegDlg] = useState<{ open: boolean; itemIdx: number | null }>({ open: false, itemIdx: null });
@@ -100,14 +101,16 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
 
   useEffect(() => {
     (async () => {
-      const [c, s, a] = await Promise.all([
+      const [c, s, a, arq] = await Promise.all([
         supabase.from("clientes").select("id,nome_razao_social,numero_cliente").order("nome_razao_social"),
         supabase.from("segmentos").select("*").eq("status", true).order("ordem"),
         supabase.from("ambientes").select("*").eq("status", true).order("ordem"),
+        supabase.from("arquitetos").select("id,nome").eq("status", true).order("nome"),
       ]);
       setClientes(c.data || []);
       setSegmentos(s.data || []);
       setAmbientes(a.data || []);
+      setArqs(arq.data || []);
 
       if (orcamentoId) {
         const { data: orc } = await supabase.from("orcamentos").select("*").eq("id", orcamentoId).single();
@@ -175,6 +178,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     setSavingCliente(true);
     const { data, error } = await supabase.from("clientes").insert({
       ...clienteForm,
+      arquiteto_id: clienteForm.arquiteto_id || null,
       created_by: user!.id,
     }).select("id,nome_razao_social,numero_cliente").single();
     setSavingCliente(false);
@@ -182,7 +186,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     setClientes(arr => [...arr, data].sort((a, b) => a.nome_razao_social.localeCompare(b.nome_razao_social)));
     setForm((f: any) => ({ ...f, cliente_id: data.id }));
     setErrors(e => ({ ...e, cliente_id: false }));
-    setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "" });
+    setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" });
     setClienteDlg(false);
     toast.success(`Cliente #${data.numero_cliente} cadastrado`);
   };
@@ -212,7 +216,6 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   const save = async (goPdf = false) => {
     const errs: Record<string, boolean> = {};
     if (!form.cliente_id) errs.cliente_id = true;
-    if (!form.nome_projeto.trim()) errs.nome_projeto = true;
     setErrors(errs);
     if (Object.keys(errs).length) return toast.error("Preencha os campos destacados em vermelho.");
     setSaving(true);
@@ -305,7 +308,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     )}
                     {clientes.map(c => (
                       <SelectItem key={c.id} value={c.id}>
-                        #{c.numero_cliente} · {c.nome_razao_social}
+                        {c.nome_razao_social}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -327,11 +330,10 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             </Select>
           </div>
           <div className="md:col-span-2">
-            <Label>Nome do projeto *</Label>
+            <Label>Nome do projeto</Label>
             <Input
               value={form.nome_projeto}
-              onChange={(e) => { setForm({ ...form, nome_projeto: e.target.value }); if (e.target.value.trim()) setErrors(er => ({ ...er, nome_projeto: false })); }}
-              className={errors.nome_projeto ? "border-destructive ring-2 ring-destructive" : ""}
+              onChange={(e) => setForm({ ...form, nome_projeto: e.target.value })}
             />
           </div>
           <div>
@@ -372,7 +374,81 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           <Button size="sm" onClick={addItem}><Plus className="h-4 w-4 mr-2" /> Adicionar item</Button>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* ── Mobile: cards empilhados ── */}
+        <div className="flex flex-col gap-3 md:hidden">
+          {itens.length === 0 && (
+            <p className="text-center text-muted-foreground py-6 text-sm">Nenhum item ainda. Clique em "Adicionar item".</p>
+          )}
+          {itens.map((it, idx) => (
+            <div key={idx} className="border border-border rounded-lg p-3 space-y-2 bg-card">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Item {idx + 1}</span>
+                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => removeItem(idx)}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Segmento</Label>
+                <Select value={it.segmento_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setSegDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { segmento_id: v }); }}>
+                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                  <SelectContent>
+                    {segmentos.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum segmento. Peça ao admin.</div>}
+                    {segmentos.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
+                    {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo segmento</SelectItem>}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Ambiente</Label>
+                <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v }); }}>
+                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                  <SelectContent>
+                    {ambientes.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum ambiente. Peça ao admin.</div>}
+                    {ambientes.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
+                    {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Produto</Label>
+                <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} onSelect={(p) => onPickProduto(idx, p)} />
+                <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs mb-1 block">Tipo</Label>
+                  <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(TIPO_ITEM_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Quantidade</Label>
+                  <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label className="text-xs mb-1 block">Preço un.</Label>
+                  <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Desconto</Label>
+                  <CurrencyInput value={it.desconto_item} onChange={(v) => updateItem(idx, { desconto_item: v })} />
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Total</Label>
+                  <p className="font-semibold text-right pt-2 text-sm">{brl(it.valor_total)}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Desktop: tabela horizontal ── */}
+        <div className="hidden md:block overflow-x-auto">
           <Table className="min-w-[1100px]">
             <TableHeader>
               <TableRow>
@@ -394,86 +470,49 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               {itens.map((it, idx) => (
                 <TableRow key={idx}>
                   <TableCell>
-                    <Select
-                      value={it.segmento_id || ""}
-                      onValueChange={(v) => {
-                        if (v === ADD_NEW) { setSegDlg({ open: true, itemIdx: idx }); return; }
-                        updateItem(idx, { segmento_id: v });
-                      }}
-                    >
+                    <Select value={it.segmento_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setSegDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { segmento_id: v }); }}>
                       <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
                       <SelectContent>
-                        {segmentos.length === 0 && !isAdmin && (
-                          <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum segmento. Peça ao admin.</div>
-                        )}
+                        {segmentos.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum segmento. Peça ao admin.</div>}
                         {segmentos.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
-                        {isAdmin && (
-                          <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo segmento</SelectItem>
-                        )}
+                        {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo segmento</SelectItem>}
                       </SelectContent>
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <Select
-                      value={it.ambiente_id || ""}
-                      onValueChange={(v) => {
-                        if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; }
-                        updateItem(idx, { ambiente_id: v });
-                      }}
-                    >
+                    <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v }); }}>
                       <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
                       <SelectContent>
-                        {ambientes.length === 0 && !isAdmin && (
-                          <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum ambiente. Peça ao admin.</div>
-                        )}
+                        {ambientes.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum ambiente. Peça ao admin.</div>}
                         {ambientes.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
-                        {isAdmin && (
-                          <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>
-                        )}
+                        {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>}
                       </SelectContent>
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <ProdutoCombobox
-                      value={it.produto_id}
-                      selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null}
-                      onSelect={(p) => onPickProduto(idx, p)}
-                    />
-
-                    <Input
-                      className="mt-1 h-8 text-xs"
-                      placeholder="Observação (opcional)"
-                      value={it.observacao || ""}
-                      onChange={(e) => updateItem(idx, { observacao: e.target.value })}
-                    />
+                    <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} onSelect={(p) => onPickProduto(idx, p)} />
+                    <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
                   </TableCell>
                   <TableCell>
                     <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {Object.entries(TIPO_ITEM_LABELS).map(([k, v]) => (
-                          <SelectItem key={k} value={k}>{v}</SelectItem>
-                        ))}
+                        {Object.entries(TIPO_ITEM_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <Input type="number" step="1" min="1" value={it.quantidade}
-                      onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
+                    <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
                   </TableCell>
                   <TableCell>
-                    <CurrencyInput value={it.preco_unitario}
-                      onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+                    <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
                   </TableCell>
                   <TableCell>
-                    <CurrencyInput value={it.desconto_item}
-                      onChange={(v) => updateItem(idx, { desconto_item: v })} />
+                    <CurrencyInput value={it.desconto_item} onChange={(v) => updateItem(idx, { desconto_item: v })} />
                   </TableCell>
                   <TableCell className="text-right font-medium">{brl(it.valor_total)}</TableCell>
                   <TableCell>
-                    <Button size="icon" variant="ghost" onClick={() => removeItem(idx)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <Button size="icon" variant="ghost" onClick={() => removeItem(idx)}><Trash2 className="h-4 w-4" /></Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -531,6 +570,16 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             <div>
               <Label>Endereço</Label>
               <Input value={clienteForm.endereco} onChange={(e) => setClienteForm({ ...clienteForm, endereco: e.target.value })} />
+            </div>
+            <div>
+              <Label>Arquiteto</Label>
+              <Select value={clienteForm.arquiteto_id || "none"} onValueChange={(v) => setClienteForm({ ...clienteForm, arquiteto_id: v === "none" ? "" : v })}>
+                <SelectTrigger><SelectValue placeholder="— Nenhum —" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— Nenhum —</SelectItem>
+                  {arqs.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>
