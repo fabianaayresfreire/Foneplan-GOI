@@ -1,15 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Download, Loader2 } from "lucide-react";
-import { TIPO_ITEM_LABELS, brl } from "@/lib/format";
+import { ArrowLeft, Download, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { TIPO_ITEM_LABELS } from "@/lib/format";
 import { toast } from "sonner";
-import logo from "@/assets/foneplan-logo.png";
-import logoRoehn from "@/assets/logo-roehn.png";
-import logoFocal from "@/assets/logo-focal.png";
-import logoSavant from "@/assets/logo-savant.png";
-import logoSonance from "@/assets/logo-sonance.png";
+import logoUrl from "@/assets/foneplan-logo.png";
+import logoRoehnUrl from "@/assets/logo-roehn.png";
+import logoFocalUrl from "@/assets/logo-focal.png";
+import logoSavantUrl from "@/assets/logo-savant.png";
+import logoSonanceUrl from "@/assets/logo-sonance.png";
 
 export const Route = createFileRoute("/_authenticated/orcamentos/$id/pdf")({
   component: PdfView,
@@ -17,11 +17,12 @@ export const Route = createFileRoute("/_authenticated/orcamentos/$id/pdf")({
 
 const DIAS = ["DOMINGO","SEGUNDA-FEIRA","TERÇA-FEIRA","QUARTA-FEIRA","QUINTA-FEIRA","SEXTA-FEIRA","SÁBADO"];
 const MESES = ["JANEIRO","FEVEREIRO","MARÇO","ABRIL","MAIO","JUNHO","JULHO","AGOSTO","SETEMBRO","OUTUBRO","NOVEMBRO","DEZEMBRO"];
+
 function dataExtenso(d: Date) {
   return `${DIAS[d.getDay()]}, ${d.getDate()} DE ${MESES[d.getMonth()]} DE ${d.getFullYear()}`;
 }
 
-async function loadImageAsDataURL(url: string): Promise<string | null> {
+async function toDataURL(url: string): Promise<string | null> {
   try {
     const res = await fetch(url);
     const blob = await res.blob();
@@ -38,11 +39,24 @@ async function loadImageAsDataURL(url: string): Promise<string | null> {
 
 function PdfView() {
   const { id } = Route.useParams();
-  const [orc, setOrc] = useState<any>(null);
-  const [itens, setItens] = useState<any[] | null>(null);
-  const [vendedor, setVendedor] = useState<any>(null);
-  const [downloading, setDownloading] = useState(false);
 
+  // Dados do orçamento
+  const [orc, setOrc]       = useState<any>(null);
+  const [itens, setItens]   = useState<any[] | null>(null);
+  const [vendedor, setVendedor] = useState<any>(null);
+
+  // Estado do PDF
+  const [status, setStatus] = useState<"idle" | "building" | "ready" | "error">("idle");
+  const [blobHref, setBlobHref]     = useState<string>("");
+  const [fileName, setFileName]     = useState<string>("orcamento.pdf");
+  const downloadRef = useRef<HTMLAnchorElement>(null);
+
+  // Pré-carregamentos em paralelo
+  const logosRef  = useRef<Record<string, string | null>>({});
+  const jspdfRef  = useRef<any>(null);
+  const autoRef   = useRef<any>(null);
+
+  // ── Carregar dados do orçamento ──────────────────────────────────────
   useEffect(() => {
     (async () => {
       const { data: o } = await supabase
@@ -50,10 +64,14 @@ function PdfView() {
         .select("*, clientes(*, arquitetos(nome,empresa,telefone,email))")
         .eq("id", id).single();
       setOrc(o);
+
       if (o?.vendedor_id) {
-        const { data: v } = await supabase.from("profiles").select("nome,email,telefone").eq("id", o.vendedor_id).single();
+        const { data: v } = await supabase
+          .from("profiles").select("nome,email,telefone")
+          .eq("id", o.vendedor_id).single();
         setVendedor(v);
       }
+
       const { data: its } = await supabase
         .from("orcamento_itens")
         .select("*, segmentos(nome,ordem), ambientes(nome,ordem)")
@@ -63,119 +81,112 @@ function PdfView() {
     })();
   }, [id]);
 
-  const baixarPdf = async () => {
-    if (!orc || !itens) {
-      toast.error("Aguarde o carregamento.");
-      return;
-    }
-    setDownloading(true);
+  // ── Pré-carregar jsPDF e logos assim que os dados chegam ─────────────
+  useEffect(() => {
+    if (!orc || !itens) return;
+    (async () => {
+      const [jspdfMod, autoMod, ...imgs] = await Promise.all([
+        import("jspdf"),
+        import("jspdf-autotable"),
+        toDataURL(logoUrl),
+        toDataURL(logoRoehnUrl),
+        toDataURL(logoFocalUrl),
+        toDataURL(logoSavantUrl),
+        toDataURL(logoSonanceUrl),
+      ]);
+      jspdfRef.current  = jspdfMod.jsPDF;
+      autoRef.current   = autoMod.default || autoMod;
+      logosRef.current  = {
+        logo:    imgs[0],
+        roehn:   imgs[1],
+        focal:   imgs[2],
+        savant:  imgs[3],
+        sonance: imgs[4],
+      };
+    })();
+  }, [orc, itens]);
+
+  // ── Gerar PDF — chamado pelo botão (gesto do usuário) ────────────────
+  const gerarPdf = async () => {
+    if (!orc || !itens) { toast.error("Aguarde o carregamento."); return; }
+
+    setStatus("building");
     try {
-      const { jsPDF } = await import("jspdf");
-      const autoTableMod: any = await import("jspdf-autotable");
-      const autoTable = autoTableMod.default || autoTableMod;
+      // Garantir que os módulos estão carregados
+      const JsPDF = jspdfRef.current || (await import("jspdf")).jsPDF;
+      const autoTable = autoRef.current || (await import("jspdf-autotable").then(m => m.default || m));
 
-      const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const margin = 12;
+      if (!jspdfRef.current) jspdfRef.current = JsPDF;
+      if (!autoRef.current)  autoRef.current  = autoTable;
 
-      // ── Cabeçalho (função reutilizável para múltiplas páginas) ──────────
-      const addHeader = (p: typeof pdf) => {
-        // Logo Foneplan
-        if (logoData) p.addImage(logoData, "PNG", margin, 8, 20, 20);
+      const logos = logosRef.current;
 
-        // Dados empresa — centro
-        p.setFont("helvetica", "bold");
-        p.setFontSize(10);
-        p.text("FONEPLAN COM E ADMINISTRACAO LTDA", pageW / 2, 13, { align: "center" });
-        p.setFont("helvetica", "normal");
-        p.setFontSize(8);
-        p.text("RUA JOÃO WAGNER WEY, 281 | JARDIM AMERICA | SOROCABA - SP | 18046-695", pageW / 2, 17.5, { align: "center" });
-        p.text("FONE (15) 3224-2316    comercial@foneplan.com.br", pageW / 2, 21.5, { align: "center" });
-        p.text("CNPJ 01.136.535/0001-57    INSC.EST. 669.348.154.111", pageW / 2, 25.5, { align: "center" });
+      const pdf     = new JsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+      const pageW   = pdf.internal.pageSize.getWidth();
+      const margin  = 12;
+      const usableW = pageW - margin * 2;
 
-        // Box PEDIDO — direita
-        const boxW = 32, boxH = 18, boxX = pageW - margin - boxW, boxY = 8;
-        p.setLineWidth(0.4);
-        p.rect(boxX, boxY, boxW, boxH);
-        p.setFontSize(7);
-        p.setFont("helvetica", "normal");
-        p.text("PEDIDO", boxX + boxW / 2, boxY + 5, { align: "center" });
-        p.setFont("helvetica", "bold");
-        p.setFontSize(14);
-        p.text(String(orc.numero_orcamento ?? ""), boxX + boxW / 2, boxY + 13, { align: "center" });
+      // ── Cabeçalho (reutilizado em cada página) ──────────────────────
+      const addHeader = () => {
+        if (logos.logo) pdf.addImage(logos.logo, "PNG", margin, 8, 20, 20);
+
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(10);
+        pdf.text("FONEPLAN COM E ADMINISTRACAO LTDA", pageW / 2, 13, { align: "center" });
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.text("RUA JOÃO WAGNER WEY, 281 | JARDIM AMERICA | SOROCABA - SP | 18046-695", pageW / 2, 17.5, { align: "center" });
+        pdf.text("FONE (15) 3224-2316    comercial@foneplan.com.br", pageW / 2, 21.5, { align: "center" });
+        pdf.text("CNPJ 01.136.535/0001-57    INSC.EST. 669.348.154.111", pageW / 2, 25.5, { align: "center" });
+
+        const bW = 32, bH = 18, bX = pageW - margin - bW, bY = 8;
+        pdf.setLineWidth(0.4);
+        pdf.rect(bX, bY, bW, bH);
+        pdf.setFontSize(7);
+        pdf.setFont("helvetica", "normal");
+        pdf.text("PEDIDO", bX + bW / 2, bY + 5, { align: "center" });
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(14);
+        pdf.text(String(orc.numero_orcamento ?? ""), bX + bW / 2, bY + 13, { align: "center" });
+        pdf.setTextColor(0, 0, 0);
       };
 
-      // Carregar logos
-      const [logoData, roehnData, focalData, savantData, sonanceData] = await Promise.all([
-        loadImageAsDataURL(logo),
-        loadImageAsDataURL(logoRoehn),
-        loadImageAsDataURL(logoFocal),
-        loadImageAsDataURL(logoSavant),
-        loadImageAsDataURL(logoSonance),
-      ]);
+      addHeader();
 
-      addHeader(pdf);
-
-      // ── Bloco cliente ──────────────────────────────────────────────────
+      // ── Bloco cliente ───────────────────────────────────────────────
       const c = orc.clientes || {};
-      const enderecoInst = c.endereco_instalacao
+      const endInst = c.endereco_instalacao
         || [c.endereco, c.bairro, c.cidade, c.estado].filter(Boolean).join(" - ");
 
       const clienteBody: any[] = [
+        [{ content: "NOME/RAZÃO SOCIAL:", styles: { fontStyle: "bold" } }, { content: c.nome_razao_social || "", colSpan: 5 }],
+        [{ content: "ENDEREÇO:", styles: { fontStyle: "bold" } }, { content: c.endereco || "", colSpan: 5 }],
         [
-          { content: "NOME/RAZÃO SOCIAL:", styles: { fontStyle: "bold" } },
-          { content: c.nome_razao_social || "", colSpan: 5 },
+          { content: "BAIRRO:", styles: { fontStyle: "bold" } }, { content: c.bairro || "" },
+          { content: "CEP:", styles: { fontStyle: "bold" } }, { content: c.cep || "-" },
+          { content: "CIDADE:", styles: { fontStyle: "bold" } }, { content: `${c.cidade || ""}${c.estado ? ` - ${c.estado}` : ""}` },
         ],
         [
-          { content: "ENDEREÇO:", styles: { fontStyle: "bold" } },
-          { content: c.endereco || "", colSpan: 5 },
+          { content: "TELEFONE:", styles: { fontStyle: "bold" } }, { content: c.telefone || "-" },
+          { content: "CELULAR:", styles: { fontStyle: "bold" } }, { content: c.celular || "-" },
+          { content: "CPF/CNPJ:", styles: { fontStyle: "bold" } }, { content: c.cpf_cnpj || "-" },
         ],
         [
-          { content: "BAIRRO:", styles: { fontStyle: "bold" } },
-          { content: c.bairro || "" },
-          { content: "CEP:", styles: { fontStyle: "bold" } },
-          { content: c.cep || "-" },
-          { content: "CIDADE:", styles: { fontStyle: "bold" } },
-          { content: `${c.cidade || ""}${c.estado ? ` - ${c.estado}` : ""}` },
+          { content: "EMAIL:", styles: { fontStyle: "bold" } }, { content: c.email || "-" },
+          { content: "RG/INSCRIÇÃO:", styles: { fontStyle: "bold" } }, { content: c.rg_inscricao || "-", colSpan: 3 },
+        ],
+        [{ content: "ENDEREÇO DE INSTALAÇÃO:", styles: { fontStyle: "bold" } }, { content: endInst || "-", colSpan: 5 }],
+        [
+          { content: "RESPONSÁVEL PELA OBRA:", styles: { fontStyle: "bold" } }, { content: c.responsavel_obra || "" },
+          { content: "CELULAR:", styles: { fontStyle: "bold" } }, { content: c.celular_responsavel_obra || "-" },
+          { content: "EMAIL:", styles: { fontStyle: "bold" } }, { content: c.email_responsavel_obra || "-" },
         ],
         [
-          { content: "TELEFONE:", styles: { fontStyle: "bold" } },
-          { content: c.telefone || "-" },
-          { content: "CELULAR:", styles: { fontStyle: "bold" } },
-          { content: c.celular || "-" },
-          { content: "CPF/CNPJ:", styles: { fontStyle: "bold" } },
-          { content: c.cpf_cnpj || "-" },
+          { content: "ARQUITETO:", styles: { fontStyle: "bold" } }, { content: c.arquitetos?.nome || "" },
+          { content: "CELULAR:", styles: { fontStyle: "bold" } }, { content: c.arquitetos?.telefone || "-" },
+          { content: "EMAIL:", styles: { fontStyle: "bold" } }, { content: c.arquitetos?.email || "-" },
         ],
-        [
-          { content: "EMAIL:", styles: { fontStyle: "bold" } },
-          { content: c.email || "-" },
-          { content: "RG/INSCRIÇÃO:", styles: { fontStyle: "bold" } },
-          { content: c.rg_inscricao || "-", colSpan: 3 },
-        ],
-        [
-          { content: "ENDEREÇO DE INSTALAÇÃO:", styles: { fontStyle: "bold" } },
-          { content: enderecoInst || "-", colSpan: 5 },
-        ],
-        [
-          { content: "RESPONSÁVEL PELA OBRA:", styles: { fontStyle: "bold" } },
-          { content: c.responsavel_obra || "" },
-          { content: "CELULAR:", styles: { fontStyle: "bold" } },
-          { content: c.celular_responsavel_obra || "-" },
-          { content: "EMAIL:", styles: { fontStyle: "bold" } },
-          { content: c.email_responsavel_obra || "-" },
-        ],
-        [
-          { content: "ARQUITETO:", styles: { fontStyle: "bold" } },
-          { content: c.arquitetos?.nome || "" },
-          { content: "CELULAR:", styles: { fontStyle: "bold" } },
-          { content: c.arquitetos?.telefone || "-" },
-          { content: "EMAIL:", styles: { fontStyle: "bold" } },
-          { content: c.arquitetos?.email || "-" },
-        ],
-        [
-          { content: "INFORMAÇÕES ADICIONAIS:", styles: { fontStyle: "bold" } },
-          { content: c.informacoes_adicionais || "", colSpan: 5 },
-        ],
+        [{ content: "INFORMAÇÕES ADICIONAIS:", styles: { fontStyle: "bold" } }, { content: c.informacoes_adicionais || "", colSpan: 5 }],
       ];
 
       autoTable(pdf, {
@@ -183,28 +194,12 @@ function PdfView() {
         margin: { left: margin, right: margin },
         body: clienteBody,
         theme: "grid",
-        styles: {
-          fontSize: 7.5,
-          cellPadding: 1.2,
-          lineColor: [0, 0, 0],
-          lineWidth: 0.15,
-          textColor: [0, 0, 0],
-          overflow: "linebreak",
-        },
-        columnStyles: {
-          0: { cellWidth: 42, fontStyle: "bold" },
-          1: { cellWidth: "auto" },
-          2: { cellWidth: 18, fontStyle: "bold" },
-          3: { cellWidth: "auto" },
-          4: { cellWidth: 22, fontStyle: "bold" },
-          5: { cellWidth: "auto" },
-        },
-        didDrawPage: (_data: any) => {
-          addHeader(pdf);
-        },
+        styles: { fontSize: 7.5, cellPadding: 1.2, lineColor: [0,0,0], lineWidth: 0.15, textColor: [0,0,0], overflow: "linebreak" },
+        columnStyles: { 0: { cellWidth: 42 }, 1: { cellWidth: "auto" }, 2: { cellWidth: 18 }, 3: { cellWidth: "auto" }, 4: { cellWidth: 22 }, 5: { cellWidth: "auto" } },
+        didDrawPage: () => addHeader(),
       });
 
-      // ── Itens agrupados por Segmento → Ambiente ────────────────────────
+      // ── Itens agrupados por Segmento → Ambiente ─────────────────────
       const grouped: Record<string, Record<string, any[]>> = {};
       itens.forEach((it) => {
         const seg = it.segmentos?.nome?.toUpperCase() || "GERAL";
@@ -216,41 +211,17 @@ function PdfView() {
 
       const itemBody: any[] = [];
       Object.entries(grouped).forEach(([seg, ambs]) => {
-        // Cabeçalho Segmento — cinza escuro
-        itemBody.push([{
-          content: seg,
-          colSpan: 3,
-          styles: {
-            halign: "center",
-            fontStyle: "bold",
-            fillColor: [210, 210, 210],
-            textColor: [0, 0, 0],
-          },
-        }]);
+        itemBody.push([{ content: seg, colSpan: 3, styles: { halign: "center", fontStyle: "bold", fillColor: [210,210,210] } }]);
         Object.entries(ambs).forEach(([amb, list]) => {
-          // Cabeçalho Ambiente — cinza claro
-          itemBody.push([{
-            content: amb,
-            colSpan: 3,
-            styles: {
-              halign: "center",
-              fontStyle: "bold",
-              fillColor: [238, 238, 238],
-              textColor: [0, 0, 0],
-            },
-          }]);
+          itemBody.push([{ content: amb, colSpan: 3, styles: { halign: "center", fontStyle: "bold", fillColor: [238,238,238] } }]);
           list.forEach((it: any) => {
-            const qtd = Number(it.quantidade) % 1 === 0
-              ? `${Math.round(it.quantidade)},00`
-              : String(it.quantidade);
-            const tipoLabel = it.tipo_item === "venda_normal" ? "" : (TIPO_ITEM_LABELS[it.tipo_item] || "");
-            const sku = it.produto_sku ? `${it.produto_sku} ` : "";
-            const obs = it.observacao ? ` - ${it.observacao}` : "";
-            const desc = `${sku}${it.produto_titulo}${obs}`;
+            const qtd = Number(it.quantidade) % 1 === 0 ? `${Math.round(it.quantidade)},00` : String(it.quantidade);
+            const tipo = it.tipo_item === "venda_normal" ? "" : (TIPO_ITEM_LABELS[it.tipo_item] || "");
+            const desc = `${it.produto_sku ? it.produto_sku + " " : ""}${it.produto_titulo}${it.observacao ? " - " + it.observacao : ""}`;
             itemBody.push([
               { content: qtd, styles: { halign: "right" } },
               { content: desc },
-              { content: tipoLabel, styles: { halign: "center", fontStyle: "italic", fontSize: 7 } },
+              { content: tipo, styles: { halign: "center", fontStyle: "italic", fontSize: 7 } },
             ]);
           });
         });
@@ -261,183 +232,130 @@ function PdfView() {
         margin: { left: margin, right: margin },
         body: itemBody,
         theme: "grid",
-        styles: {
-          fontSize: 8,
-          cellPadding: 1.2,
-          lineColor: [0, 0, 0],
-          lineWidth: 0.15,
-          textColor: [0, 0, 0],
-        },
-        columnStyles: {
-          0: { cellWidth: 16 },
-          1: { cellWidth: "auto" },
-          2: { cellWidth: 30 },
-        },
-        didDrawPage: (_data: any) => {
-          addHeader(pdf);
-        },
+        styles: { fontSize: 8, cellPadding: 1.2, lineColor: [0,0,0], lineWidth: 0.15, textColor: [0,0,0] },
+        columnStyles: { 0: { cellWidth: 16 }, 1: { cellWidth: "auto" }, 2: { cellWidth: 30 } },
+        didDrawPage: () => addHeader(),
       });
 
-      // ── Prazo + Garantia + Observações ─────────────────────────────────
+      // ── Prazo, Garantia, Observações ─────────────────────────────────
       let y = (pdf as any).lastAutoTable.finalY + 5;
-      const usableW = pageW - margin * 2;
-
-      const checkPageBreak = (neededH: number) => {
-        if (y + neededH > pdf.internal.pageSize.getHeight() - 20) {
-          pdf.addPage();
-          addHeader(pdf);
-          y = 33;
-        }
+      const pageH = pdf.internal.pageSize.getHeight();
+      const checkBreak = (h: number) => {
+        if (y + h > pageH - 40) { pdf.addPage(); addHeader(); y = 33; }
       };
 
       pdf.setFontSize(8);
+      checkBreak(6);
       pdf.setFont("helvetica", "bold");
-      checkPageBreak(6);
       pdf.text(`PRAZO PARA ENTREGA: ${orc.prazo || ""}`, margin, y);
       y += 6;
 
-      const termoGarantia = orc.garantia
+      const garantiaBody = orc.garantia
         || "Toda instalação e serviços terão garantia de 1 ano, materiais e equipamentos a garantia é de responsabilidade do fabricante.";
-      const garantiaTxt = "TERMO DE GARANTIA: " + termoGarantia +
-        " Não será concedida garantia nos seguintes casos: desregulagens ou quebras ocasionadas por mau uso, " +
-        "manutenções, modificações ou adaptações realizadas por pessoal não credenciado pela Foneplan, " +
-        "oscilações anormais de energia elétrica, descargas atmosféricas, assim como ligação em tensão " +
-        "acima da especificada pelo fabricante do equipamento.";
-
-      pdf.setFont("helvetica", "normal");
-      const garantiaLines = pdf.splitTextToSize(garantiaTxt, usableW);
-      // Bold apenas o label
-      const garantiaParts = pdf.splitTextToSize("TERMO DE GARANTIA:", usableW);
-      checkPageBreak(garantiaLines.length * 3.8 + 4);
+      const garantiaExtra = " Não será concedida garantia nos seguintes casos: desregulagens ou quebras ocasionadas por mau uso, manutenções, modificações ou adaptações realizadas por pessoal não credenciado pela Foneplan, oscilações anormais de energia elétrica, descargas atmosféricas, assim como ligação em tensão acima da especificada pelo fabricante do equipamento.";
+      const garantiaFull = garantiaBody + garantiaExtra;
+      const garantiaLines = pdf.splitTextToSize(garantiaFull, usableW - 44);
+      checkBreak(garantiaLines.length * 3.8 + 4);
       pdf.setFont("helvetica", "bold");
       pdf.text("TERMO DE GARANTIA:", margin, y);
       pdf.setFont("helvetica", "normal");
-      const garantiaBody = pdf.splitTextToSize(
-        termoGarantia + " Não será concedida garantia nos seguintes casos: desregulagens ou quebras ocasionadas por mau uso, " +
-        "manutenções, modificações ou adaptações realizadas por pessoal não credenciado pela Foneplan, " +
-        "oscilações anormais de energia elétrica, descargas atmosféricas, assim como ligação em tensão " +
-        "acima da especificada pelo fabricante do equipamento.",
-        usableW - 42
-      );
-      pdf.text(garantiaBody, margin + 42, y);
-      const garantiaH = Math.max(garantiaBody.length, 1) * 3.8;
-      y += garantiaH + 3;
+      pdf.text(garantiaLines, margin + 44, y);
+      y += Math.max(garantiaLines.length, 1) * 3.8 + 4;
 
       if (orc.observacoes_cliente) {
-        checkPageBreak(20);
+        const obsLines = pdf.splitTextToSize(orc.observacoes_cliente, usableW);
+        checkBreak(obsLines.length * 3.8 + 8);
         pdf.setFont("helvetica", "bold");
         pdf.text("OBSERVAÇÕES:", margin, y);
         y += 4;
         pdf.setFont("helvetica", "normal");
-        const obsLines = pdf.splitTextToSize(orc.observacoes_cliente, usableW);
-        checkPageBreak(obsLines.length * 3.8 + 4);
         pdf.text(obsLines, margin, y);
         y += obsLines.length * 3.8 + 4;
       }
 
-      // ── Assinatura ─────────────────────────────────────────────────────
-      const sigH = 14;
-      checkPageBreak(sigH + 28);
-
+      // ── Assinatura ───────────────────────────────────────────────────
+      checkBreak(42);
       const nomeVend = (vendedor?.nome || "—").toUpperCase();
-      const contatoVend = [
-        vendedor?.telefone,
-        vendedor?.email,
-      ].filter(Boolean).join("  |  ") || vendedor?.email || "";
+      const telVend  = vendedor?.telefone || "";
+      const emailVend = vendedor?.email || "";
+      const contatoVend = [telVend, emailVend].filter(Boolean).join("  |  ");
 
       autoTable(pdf, {
         startY: y,
         margin: { left: margin, right: margin },
         body: [[
           { content: dataExtenso(new Date(orc.created_at)), styles: { halign: "center" } },
-          {
-            content: `${nomeVend}\n${contatoVend}`,
-            styles: { halign: "center", fontStyle: "bold" },
-          },
+          { content: `${nomeVend}\n${contatoVend}`, styles: { halign: "center", fontStyle: "bold" } },
         ]],
         theme: "grid",
-        styles: {
-          fontSize: 8,
-          cellPadding: 3,
-          lineColor: [0, 0, 0],
-          lineWidth: 0.2,
-          textColor: [0, 0, 0],
-        },
-        columnStyles: { 0: { cellWidth: (usableW) / 2 } },
-        didDrawPage: (_data: any) => {
-          addHeader(pdf);
-        },
+        styles: { fontSize: 8, cellPadding: 3, lineColor: [0,0,0], lineWidth: 0.2, textColor: [0,0,0] },
+        columnStyles: { 0: { cellWidth: usableW / 2 } },
+        didDrawPage: () => addHeader(),
       });
 
-      // ── Rodapé parceiros ───────────────────────────────────────────────
-      const partnerY = (pdf as any).lastAutoTable.finalY;
+      // ── Rodapé parceiros ─────────────────────────────────────────────
+      const pY = (pdf as any).lastAutoTable.finalY;
 
       // Barra "Distribuidor Credenciado"
       pdf.setFillColor(245, 245, 245);
       pdf.setDrawColor(0, 0, 0);
       pdf.setLineWidth(0.2);
-      pdf.rect(margin, partnerY, usableW, 7, "FD");
+      pdf.rect(margin, pY, usableW, 7, "FD");
       pdf.setFont("helvetica", "bold");
       pdf.setFontSize(8);
-      pdf.setTextColor(0, 0, 0);
-      pdf.text("Distribuidor Credenciado", pageW / 2, partnerY + 4.5, { align: "center" });
+      pdf.text("Distribuidor Credenciado", pageW / 2, pY + 4.5, { align: "center" });
 
-      // Logos dos parceiros
-      const logoRowY = partnerY + 7;
-      const logoRowH = 16;
+      // Logos
+      const lY = pY + 7;
+      const lH = 16;
       const slotW = usableW / 4;
-
       pdf.setDrawColor(200, 200, 200);
       pdf.setLineWidth(0.15);
-      pdf.rect(margin, logoRowY, usableW, logoRowH, "D");
+      pdf.rect(margin, lY, usableW, lH, "D");
 
-      const renderLogoInSlot = (
-        imgData: string | null,
-        slotIndex: number,
-        darkBg = false,
-        paddingX = 4,
-        paddingY = 2
-      ) => {
-        const slotX = margin + slotIndex * slotW;
-        if (darkBg) {
-          pdf.setFillColor(25, 25, 25);
-          pdf.rect(slotX, logoRowY, slotW, logoRowH, "F");
-        }
-        // Separador vertical
-        if (slotIndex > 0) {
-          pdf.setDrawColor(200, 200, 200);
-          pdf.line(slotX, logoRowY, slotX, logoRowY + logoRowH);
-        }
-        if (imgData) {
-          const maxW = slotW - paddingX * 2;
-          const maxH = logoRowH - paddingY * 2;
-          pdf.addImage(imgData, "PNG", slotX + paddingX, logoRowY + paddingY, maxW, maxH, undefined, "FAST");
-        }
+      const drawLogo = (img: string | null, idx: number, darkBg = false) => {
+        const sx = margin + idx * slotW;
+        if (darkBg) { pdf.setFillColor(25, 25, 25); pdf.rect(sx, lY, slotW, lH, "F"); }
+        if (idx > 0) { pdf.setDrawColor(200,200,200); pdf.line(sx, lY, sx, lY + lH); }
+        if (img) pdf.addImage(img, "PNG", sx + 4, lY + 2, slotW - 8, lH - 4, undefined, "FAST");
       };
 
-      renderLogoInSlot(savantData, 0, true, 6, 3);   // Savant — fundo escuro
-      renderLogoInSlot(roehnData, 1, false, 4, 2);    // Roehn
-      renderLogoInSlot(focalData, 2, false, 4, 2);    // Focal
-      renderLogoInSlot(sonanceData, 3, false, 4, 2);  // Sonance
+      drawLogo(logos.savant,  0, true);
+      drawLogo(logos.roehn,   1);
+      drawLogo(logos.focal,   2);
+      drawLogo(logos.sonance, 3);
 
-      // ── Gerar e baixar ─────────────────────────────────────────────────
-      const nomeCliente = (orc.clientes?.nome_razao_social || "cliente")
-        .normalize("NFD")
-        .replace(/[̀-ͯ]/g, "")
-        .replace(/[^a-zA-Z0-9\s]/g, "")
-        .trim()
-        .replace(/\s+/g, "-");
-      const fileName = `Foneplan-${orc.numero_orcamento ?? "sem-numero"}-${nomeCliente}.pdf`;
+      // ── Criar blob e expor como link direto ──────────────────────────
+      const blob = pdf.output("blob");
+      const href = URL.createObjectURL(blob);
 
-      pdf.save(fileName);
-      toast.success("PDF baixado com sucesso!");
+      const slug = (orc.clientes?.nome_razao_social || "cliente")
+        .normalize("NFD").replace(/[̀-ͯ]/g, "")
+        .replace(/[^a-zA-Z0-9\s]/g, "").trim().replace(/\s+/g, "-");
+      const name = `Foneplan-${orc.numero_orcamento ?? "sem-numero"}-${slug}.pdf`;
+
+      setBlobHref(href);
+      setFileName(name);
+      setStatus("ready");
+
     } catch (err: any) {
-      console.error("[PDF] Erro:", err);
-      toast.error("Erro ao gerar PDF: " + (err?.message || "desconhecido"));
-    } finally {
-      setDownloading(false);
+      console.error("[PDF] erro:", err);
+      toast.error("Erro ao gerar PDF: " + (err?.message || String(err)));
+      setStatus("error");
     }
   };
+
+  // Clicar automaticamente no link de download quando ficar pronto
+  useEffect(() => {
+    if (status === "ready" && blobHref && downloadRef.current) {
+      downloadRef.current.click();
+    }
+  }, [status, blobHref]);
+
+  // Limpar blob URL ao desmontar
+  useEffect(() => {
+    return () => { if (blobHref) URL.revokeObjectURL(blobHref); };
+  }, [blobHref]);
 
   if (!orc) {
     return (
@@ -451,8 +369,7 @@ function PdfView() {
 
   return (
     <div className="bg-background min-h-screen p-4 md:p-8">
-      {/* Barra topo */}
-      <div className="max-w-2xl mx-auto flex justify-between items-center mb-6">
+      <div className="max-w-2xl mx-auto flex items-center mb-6">
         <Button asChild variant="ghost">
           <Link to="/orcamentos/$id" params={{ id }}>
             <ArrowLeft className="h-4 w-4 mr-2" />Voltar
@@ -460,41 +377,81 @@ function PdfView() {
         </Button>
       </div>
 
-      {/* Card central */}
-      <div className="max-w-2xl mx-auto bg-card border border-border rounded-xl p-8 text-center shadow-sm">
-        {/* Ícone */}
-        <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-          <Download className="h-8 w-8 text-primary" />
+      <div className="max-w-2xl mx-auto bg-card border border-border rounded-xl p-8 text-center shadow-sm space-y-4">
+
+        {/* Ícone de status */}
+        <div className="flex justify-center">
+          {status === "ready"
+            ? <CheckCircle2 className="h-16 w-16 text-green-500" />
+            : status === "error"
+            ? <AlertCircle className="h-16 w-16 text-destructive" />
+            : <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
+                <Download className="h-8 w-8 text-primary" />
+              </div>
+          }
         </div>
 
-        <h1 className="text-2xl font-bold mb-1">
-          Orçamento #{orc.numero_orcamento}
-        </h1>
-        <p className="text-muted-foreground mb-1 text-sm">
-          {c.nome_razao_social || "—"}
-        </p>
-        {orc.nome_projeto && (
-          <p className="text-muted-foreground text-sm mb-1">{orc.nome_projeto}</p>
+        <div>
+          <h1 className="text-2xl font-bold">Orçamento #{orc.numero_orcamento}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{c.nome_razao_social || "—"}</p>
+          {orc.nome_projeto && <p className="text-muted-foreground text-sm">{orc.nome_projeto}</p>}
+          <p className="text-muted-foreground text-sm">
+            {itens ? `${itens.length} iten${itens.length !== 1 ? "s" : ""}` : "Carregando itens..."}
+          </p>
+        </div>
+
+        {/* Link oculto que será clicado automaticamente quando o blob estiver pronto */}
+        <a
+          ref={downloadRef}
+          href={blobHref}
+          download={fileName}
+          className="hidden"
+          aria-hidden
+        />
+
+        {status === "idle" && (
+          <Button
+            size="lg"
+            className="w-full sm:w-auto px-10"
+            onClick={gerarPdf}
+            disabled={!itens}
+          >
+            <Download className="h-5 w-5 mr-2" />
+            Gerar e Baixar PDF
+          </Button>
         )}
-        <p className="text-muted-foreground text-sm mb-6">
-          {itens ? `${itens.length} iten${itens.length !== 1 ? "s" : ""}` : "Carregando..."}
-        </p>
 
-        <Button
-          size="lg"
-          className="w-full sm:w-auto px-10 text-base"
-          onClick={baixarPdf}
-          disabled={downloading || !itens}
-        >
-          {downloading
-            ? <><Loader2 className="h-5 w-5 mr-2 animate-spin" />Gerando PDF...</>
-            : <><Download className="h-5 w-5 mr-2" />Baixar PDF</>
-          }
-        </Button>
+        {status === "building" && (
+          <Button size="lg" className="w-full sm:w-auto px-10" disabled>
+            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+            Gerando PDF...
+          </Button>
+        )}
 
-        <p className="text-xs text-muted-foreground mt-4">
-          O arquivo será salvo na pasta de Downloads do seu navegador.
-        </p>
+        {status === "ready" && (
+          <div className="space-y-3">
+            <p className="text-sm text-green-600 font-medium">PDF gerado! Salvando nos downloads…</p>
+            {/* Botão visível como fallback se o clique automático não funcionar */}
+            <a href={blobHref} download={fileName}>
+              <Button size="lg" className="w-full sm:w-auto px-10">
+                <Download className="h-5 w-5 mr-2" />
+                Clique aqui para baixar
+              </Button>
+            </a>
+            <p className="text-xs text-muted-foreground">
+              Se o download não iniciou automaticamente, clique no botão acima.
+            </p>
+          </div>
+        )}
+
+        {status === "error" && (
+          <div className="space-y-3">
+            <p className="text-sm text-destructive">Ocorreu um erro ao gerar o PDF.</p>
+            <Button size="lg" variant="outline" onClick={() => setStatus("idle")}>
+              Tentar novamente
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
