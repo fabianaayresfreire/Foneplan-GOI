@@ -4,6 +4,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Download, Loader2, FileText } from "lucide-react";
 import { TIPO_ITEM_LABELS } from "@/lib/format";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import logoUrl    from "@/assets/foneplan-logo.png";
 import logoRoehn  from "@/assets/logo-roehn.png";
 import logoFocal  from "@/assets/logo-focal.png";
@@ -72,11 +74,6 @@ function PdfView() {
     try {
       if (!orc)   throw new Error("Orçamento não carregado ainda.");
       if (!itens) throw new Error("Itens não carregados ainda.");
-
-      // ── Importar libs ───────────────────────────────────────────────
-      const { jsPDF }        = await import("jspdf");
-      const autoTableMod     = await import("jspdf-autotable");
-      const autoTable: any   = autoTableMod.default ?? autoTableMod;
 
       // ── Carregar logos em paralelo ──────────────────────────────────
       const [iLogo, iRoehn, iFocal, iSavant, iSonance] = await Promise.all([
