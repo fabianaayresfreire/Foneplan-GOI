@@ -281,15 +281,24 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             {isNew ? "Novo orçamento" : "Editar orçamento"}
           </h1>
         </div>
-        <div className="flex gap-2 sm:flex-row">
+        <div className="flex gap-2 sm:flex-row flex-wrap">
           <Button variant="outline" className="flex-1 sm:flex-initial" onClick={() => save(false)} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
             Salvar
           </Button>
+          {!isNew && orcamentoId && (
+            <Button asChild variant="outline" className="flex-1 sm:flex-initial">
+              <Link to="/orcamentos/$id/pdf" params={{ id: orcamentoId }}>
+                <FileText className="h-4 w-4 mr-2" />
+                <span className="hidden sm:inline">Baixar PDF</span>
+                <span className="sm:hidden">PDF</span>
+              </Link>
+            </Button>
+          )}
           <Button className="flex-1 sm:flex-initial" onClick={() => save(true)} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
-            <span className="hidden sm:inline">Salvar e gerar PDF</span>
-            <span className="sm:hidden">PDF</span>
+            <span className="hidden sm:inline">Salvar e abrir PDF</span>
+            <span className="sm:hidden">Salvar+PDF</span>
           </Button>
         </div>
       </div>
