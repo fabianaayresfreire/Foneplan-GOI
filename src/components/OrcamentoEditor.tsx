@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { Plus, Trash2, Save, FileText, ArrowLeft, UserPlus, Loader2 } from "lucide-react";
 import { brl, STATUS_LABELS, TIPO_ITEM_LABELS } from "@/lib/format";
+import { maskCpfCnpj, maskCep, fetchViaCep } from "@/lib/masks";
 import { useAuth } from "@/lib/auth";
 import { Link } from "@tanstack/react-router";
 import { ProdutoCombobox } from "@/components/ProdutoCombobox";
@@ -96,12 +97,33 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "",
     endereco_instalacao: "", arquiteto_id: "",
   });
-  const [savingCliente, setSavingCliente] = useState(false);
+  const [savingCliente, setSavingCliente]   = useState(false);
   const [clienteEmailErr, setClienteEmailErr] = useState(false);
+  const [clienteCepLoading, setClienteCepLoading] = useState(false);
+  const [clienteCepErr, setClienteCepErr]     = useState("");
 
   const isValidEmail = (v: string) => {
     if (!v.trim()) return true;
     return /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.trim());
+  };
+
+  const handleClienteCep = async (raw: string) => {
+    const masked = maskCep(raw);
+    setClienteForm(prev => ({ ...prev, cep: masked }));
+    setClienteCepErr("");
+    if (masked.replace(/\D/g, "").length !== 8) return;
+    setClienteCepLoading(true);
+    const result = await fetchViaCep(masked);
+    setClienteCepLoading(false);
+    if (result === "not_found") { setClienteCepErr("CEP não encontrado."); return; }
+    if (result === "error")     { setClienteCepErr("Erro ao buscar CEP."); return; }
+    setClienteForm(prev => ({
+      ...prev,
+      endereco: result.logradouro || prev.endereco,
+      bairro:   result.bairro     || prev.bairro,
+      cidade:   result.localidade || prev.cidade,
+      estado:   result.uf         || prev.estado,
+    }));
   };
 
   const [segDlg, setSegDlg] = useState<{ open: boolean; itemIdx: number | null }>({ open: false, itemIdx: null });
@@ -200,7 +222,8 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     setClientes(arr => [...arr, data].sort((a, b) => a.nome_razao_social.localeCompare(b.nome_razao_social)));
     setForm((f: any) => ({ ...f, cliente_id: data.id }));
     setErrors(e => ({ ...e, cliente_id: false }));
-    setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" });
+    setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", celular: "", email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "", endereco_instalacao: "", arquiteto_id: "" });
+    setClienteEmailErr(false); setClienteCepErr("");
     setClienteDlg(false);
     toast.success(`Cliente #${data.numero_cliente} cadastrado`);
   };
@@ -337,7 +360,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                   </SelectContent>
                 </Select>
               </div>
-              <Button type="button" variant="outline" onClick={() => { setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", celular: "", email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "", endereco_instalacao: "", arquiteto_id: "" }); setClienteEmailErr(false); setClienteDlg(true); }} title="Cadastrar novo cliente">
+              <Button type="button" variant="outline" onClick={() => { setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", celular: "", email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "", endereco_instalacao: "", arquiteto_id: "" }); setClienteEmailErr(false); setClienteCepErr(""); setClienteDlg(true); }} title="Cadastrar novo cliente">
                 <UserPlus className="h-4 w-4" />
               </Button>
             </div>
@@ -582,7 +605,10 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>CPF / CNPJ</Label>
-                <Input value={clienteForm.cpf_cnpj} onChange={(e) => setClienteForm({ ...clienteForm, cpf_cnpj: e.target.value })} />
+                <Input value={clienteForm.cpf_cnpj}
+                  onChange={(e) => setClienteForm({ ...clienteForm, cpf_cnpj: maskCpfCnpj(e.target.value) })}
+                  placeholder="000.000.000-00 ou 00.000.000/0000-00"
+                  maxLength={18} />
               </div>
               <div>
                 <Label>Telefone</Label>
@@ -628,7 +654,18 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
               <div>
                 <Label>CEP</Label>
-                <Input value={clienteForm.cep} onChange={(e) => setClienteForm({ ...clienteForm, cep: e.target.value })} />
+                <div className="relative">
+                  <Input value={clienteForm.cep}
+                    onChange={(e) => handleClienteCep(e.target.value)}
+                    placeholder="00000-000"
+                    maxLength={9}
+                    className={clienteCepErr ? "border-destructive focus-visible:ring-destructive pr-8" : "pr-8"}
+                  />
+                  {clienteCepLoading && (
+                    <Loader2 className="h-4 w-4 animate-spin absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  )}
+                </div>
+                {clienteCepErr && <p className="text-xs text-destructive mt-1">{clienteCepErr}</p>}
               </div>
             </div>
 

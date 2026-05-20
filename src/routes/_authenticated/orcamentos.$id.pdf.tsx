@@ -118,7 +118,7 @@ function PdfView() {
         [B("ENDEREÇO:"),           {content: c.endereco||"",         colSpan:5}],
         [B("BAIRRO:"), {content:c.bairro||""}, B("CEP:"), {content:c.cep||"-"}, B("CIDADE:"), {content:`${c.cidade||""}${c.estado?` - ${c.estado}`:""}`}],
         [B("TELEFONE:"), {content:c.telefone||"-"}, B("CELULAR:"), {content:c.celular||"-"}, B("CPF/CNPJ:"), {content:c.cpf_cnpj||"-"}],
-        [B("EMAIL:"), {content:c.email||"-"}, B("RG/INSCRIÇÃO:"), {content:c.rg_inscricao||"-", colSpan:3}],
+        [B("EMAIL:"), {content:c.email||"-", colSpan:2}, B("RG / INSCRIÇÃO:"), {content:c.rg_inscricao||"-", colSpan:2}],
         [B("ENDEREÇO DE INSTALAÇÃO:"), {content:endInst||"-", colSpan:5}],
         [B("RESPONSÁVEL PELA OBRA:"), {content:c.responsavel_obra||""}, B("CELULAR:"), {content:c.celular_responsavel_obra||"-"}, B("EMAIL:"), {content:c.email_responsavel_obra||"-"}],
         [B("ARQUITETO:"), {content:c.arquitetos?.nome||""}, B("CELULAR:"), {content:c.arquitetos?.telefone||"-"}, B("EMAIL:"), {content:c.arquitetos?.email||"-"}],
