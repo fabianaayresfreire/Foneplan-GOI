@@ -93,6 +93,12 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   const [arqs, setArqs] = useState<any[]>([]);
   const [clienteForm, setClienteForm] = useState({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" });
   const [savingCliente, setSavingCliente] = useState(false);
+  const [clienteEmailErr, setClienteEmailErr] = useState(false);
+
+  const isValidEmail = (v: string) => {
+    if (!v.trim()) return true;
+    return /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.trim());
+  };
 
   const [segDlg, setSegDlg] = useState<{ open: boolean; itemIdx: number | null }>({ open: false, itemIdx: null });
   const [segNome, setSegNome] = useState("");
@@ -175,6 +181,10 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
 
   const saveCliente = async () => {
     if (!clienteForm.nome_razao_social.trim()) return toast.error("Informe o nome do cliente.");
+    if (!isValidEmail(clienteForm.email)) {
+      setClienteEmailErr(true);
+      return toast.error("E-mail inválido.");
+    }
     setSavingCliente(true);
     const { data, error } = await supabase.from("clientes").insert({
       ...clienteForm,
@@ -323,7 +333,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                   </SelectContent>
                 </Select>
               </div>
-              <Button type="button" variant="outline" onClick={() => setClienteDlg(true)} title="Cadastrar novo cliente">
+              <Button type="button" variant="outline" onClick={() => { setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" }); setClienteEmailErr(false); setClienteDlg(true); }} title="Cadastrar novo cliente">
                 <UserPlus className="h-4 w-4" />
               </Button>
             </div>
@@ -573,8 +583,20 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
             </div>
             <div>
-              <Label>Email</Label>
-              <Input type="email" value={clienteForm.email} onChange={(e) => setClienteForm({ ...clienteForm, email: e.target.value })} />
+              <Label>E-mail</Label>
+              <Input
+                type="text"
+                value={clienteForm.email}
+                onChange={(e) => {
+                  setClienteForm({ ...clienteForm, email: e.target.value });
+                  if (clienteEmailErr) setClienteEmailErr(!isValidEmail(e.target.value));
+                }}
+                onBlur={(e) => setClienteEmailErr(!isValidEmail(e.target.value))}
+                className={clienteEmailErr ? "border-destructive focus-visible:ring-destructive" : ""}
+              />
+              {clienteEmailErr && (
+                <p className="text-xs text-destructive mt-1">E-mail inválido. Use o formato nome@dominio.com</p>
+              )}
             </div>
             <div>
               <Label>Endereço</Label>

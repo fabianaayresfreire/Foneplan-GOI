@@ -25,6 +25,14 @@ const empty = {
   informacoes_adicionais: "",
 };
 
+/** Retorna true se o e-mail for válido OU vazio (campo opcional). */
+const isValidEmail = (v: string) => {
+  if (!v.trim()) return true;
+  return /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.trim());
+};
+
+const emptyEmailErrors = { email: false, emailResponsavel: false };
+
 function ClientesPage() {
   const { user } = useAuth();
   const [rows, setRows] = useState<any[]>([]);
@@ -33,6 +41,7 @@ function ClientesPage() {
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<any>(null);
   const [form, setForm] = useState<any>(empty);
+  const [emailErrors, setEmailErrors] = useState(emptyEmailErrors);
 
   const load = async () => {
     const { data } = await supabase.from("clientes").select("*, arquitetos(nome)").order("numero_cliente", { ascending: false });
@@ -42,11 +51,20 @@ function ClientesPage() {
   };
   useEffect(() => { load(); }, []);
 
-  const openNew = () => { setEdit(null); setForm(empty); setOpen(true); };
-  const openEdit = (c: any) => { setEdit(c); setForm({ ...empty, ...c, arquiteto_id: c.arquiteto_id }); setOpen(true); };
+  const openNew = () => { setEdit(null); setForm(empty); setEmailErrors(emptyEmailErrors); setOpen(true); };
+  const openEdit = (c: any) => { setEdit(c); setForm({ ...empty, ...c, arquiteto_id: c.arquiteto_id }); setEmailErrors(emptyEmailErrors); setOpen(true); };
 
   const save = async () => {
     if (!form.nome_razao_social.trim()) return toast.error("Nome obrigatório");
+
+    // Valida e-mails antes de salvar
+    const errs = {
+      email: !isValidEmail(form.email),
+      emailResponsavel: !isValidEmail(form.email_responsavel_obra),
+    };
+    setEmailErrors(errs);
+    if (errs.email || errs.emailResponsavel) return toast.error("Corrija os e-mails inválidos.");
+
     const payload = { ...form, arquiteto_id: form.arquiteto_id || null };
     if (edit) {
       const { error } = await supabase.from("clientes").update(payload).eq("id", edit.id);
@@ -125,7 +143,22 @@ function ClientesPage() {
             <div className="md:col-span-2"><Label>Nome / Razão social *</Label><Input value={form.nome_razao_social} onChange={(e) => setForm({ ...form, nome_razao_social: e.target.value })} /></div>
             <div><Label>CPF/CNPJ</Label><Input value={form.cpf_cnpj} onChange={(e) => setForm({ ...form, cpf_cnpj: e.target.value })} /></div>
             <div><Label>RG / Inscrição</Label><Input value={form.rg_inscricao} onChange={(e) => setForm({ ...form, rg_inscricao: e.target.value })} /></div>
-            <div><Label>E-mail</Label><Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+            <div>
+              <Label>E-mail</Label>
+              <Input
+                type="text"
+                value={form.email}
+                onChange={(e) => {
+                  setForm({ ...form, email: e.target.value });
+                  if (emailErrors.email) setEmailErrors(prev => ({ ...prev, email: !isValidEmail(e.target.value) }));
+                }}
+                onBlur={(e) => setEmailErrors(prev => ({ ...prev, email: !isValidEmail(e.target.value) }))}
+                className={emailErrors.email ? "border-destructive focus-visible:ring-destructive" : ""}
+              />
+              {emailErrors.email && (
+                <p className="text-xs text-destructive mt-1">E-mail inválido. Use o formato nome@dominio.com</p>
+              )}
+            </div>
             <div><Label>Telefone</Label><Input value={form.telefone} onChange={(e) => setForm({ ...form, telefone: e.target.value })} /></div>
             <div><Label>Celular</Label><Input value={form.celular} onChange={(e) => setForm({ ...form, celular: e.target.value })} /></div>
             <div><Label>CEP</Label><Input value={form.cep} onChange={(e) => setForm({ ...form, cep: e.target.value })} /></div>
@@ -136,7 +169,22 @@ function ClientesPage() {
             <div className="md:col-span-2"><Label>Endereço de instalação</Label><Input value={form.endereco_instalacao} onChange={(e) => setForm({ ...form, endereco_instalacao: e.target.value })} /></div>
             <div><Label>Responsável da obra</Label><Input value={form.responsavel_obra} onChange={(e) => setForm({ ...form, responsavel_obra: e.target.value })} /></div>
             <div><Label>Celular do responsável</Label><Input value={form.celular_responsavel_obra} onChange={(e) => setForm({ ...form, celular_responsavel_obra: e.target.value })} /></div>
-            <div className="md:col-span-2"><Label>E-mail do responsável</Label><Input type="email" value={form.email_responsavel_obra} onChange={(e) => setForm({ ...form, email_responsavel_obra: e.target.value })} /></div>
+            <div className="md:col-span-2">
+              <Label>E-mail do responsável</Label>
+              <Input
+                type="text"
+                value={form.email_responsavel_obra}
+                onChange={(e) => {
+                  setForm({ ...form, email_responsavel_obra: e.target.value });
+                  if (emailErrors.emailResponsavel) setEmailErrors(prev => ({ ...prev, emailResponsavel: !isValidEmail(e.target.value) }));
+                }}
+                onBlur={(e) => setEmailErrors(prev => ({ ...prev, emailResponsavel: !isValidEmail(e.target.value) }))}
+                className={emailErrors.emailResponsavel ? "border-destructive focus-visible:ring-destructive" : ""}
+              />
+              {emailErrors.emailResponsavel && (
+                <p className="text-xs text-destructive mt-1">E-mail inválido. Use o formato nome@dominio.com</p>
+              )}
+            </div>
             <div className="md:col-span-2">
               <Label>Arquiteto vinculado</Label>
               <Select value={form.arquiteto_id || "none"} onValueChange={(v) => setForm({ ...form, arquiteto_id: v === "none" ? null : v })}>
