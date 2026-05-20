@@ -91,7 +91,11 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   // Dialog states
   const [clienteDlg, setClienteDlg] = useState(false);
   const [arqs, setArqs] = useState<any[]>([]);
-  const [clienteForm, setClienteForm] = useState({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" });
+  const [clienteForm, setClienteForm] = useState({
+    nome_razao_social: "", cpf_cnpj: "", telefone: "", celular: "",
+    email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "",
+    endereco_instalacao: "", arquiteto_id: "",
+  });
   const [savingCliente, setSavingCliente] = useState(false);
   const [clienteEmailErr, setClienteEmailErr] = useState(false);
 
@@ -333,7 +337,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                   </SelectContent>
                 </Select>
               </div>
-              <Button type="button" variant="outline" onClick={() => { setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", email: "", endereco: "", arquiteto_id: "" }); setClienteEmailErr(false); setClienteDlg(true); }} title="Cadastrar novo cliente">
+              <Button type="button" variant="outline" onClick={() => { setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", celular: "", email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "", endereco_instalacao: "", arquiteto_id: "" }); setClienteEmailErr(false); setClienteDlg(true); }} title="Cadastrar novo cliente">
                 <UserPlus className="h-4 w-4" />
               </Button>
             </div>
@@ -562,16 +566,19 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
 
       {/* Dialog: novo cliente */}
       <Dialog open={clienteDlg} onOpenChange={setClienteDlg}>
-        <DialogContent>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Novo cliente</DialogTitle>
             <DialogDescription>Cadastre rapidamente. Você pode completar os dados depois em Clientes.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
+            {/* Nome */}
             <div>
               <Label>Nome / Razão social *</Label>
               <Input value={clienteForm.nome_razao_social} onChange={(e) => setClienteForm({ ...clienteForm, nome_razao_social: e.target.value })} />
             </div>
+
+            {/* CPF/CNPJ + Telefone */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>CPF / CNPJ</Label>
@@ -582,26 +589,68 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                 <Input value={clienteForm.telefone} onChange={(e) => setClienteForm({ ...clienteForm, telefone: e.target.value })} />
               </div>
             </div>
-            <div>
-              <Label>E-mail</Label>
-              <Input
-                type="text"
-                value={clienteForm.email}
-                onChange={(e) => {
-                  setClienteForm({ ...clienteForm, email: e.target.value });
-                  if (clienteEmailErr) setClienteEmailErr(!isValidEmail(e.target.value));
-                }}
-                onBlur={(e) => setClienteEmailErr(!isValidEmail(e.target.value))}
-                className={clienteEmailErr ? "border-destructive focus-visible:ring-destructive" : ""}
-              />
-              {clienteEmailErr && (
-                <p className="text-xs text-destructive mt-1">E-mail inválido. Use o formato nome@dominio.com</p>
-              )}
+
+            {/* Celular + E-mail */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Celular</Label>
+                <Input value={clienteForm.celular} onChange={(e) => setClienteForm({ ...clienteForm, celular: e.target.value })} />
+              </div>
+              <div>
+                <Label>E-mail</Label>
+                <Input
+                  type="text"
+                  value={clienteForm.email}
+                  onChange={(e) => {
+                    setClienteForm({ ...clienteForm, email: e.target.value });
+                    if (clienteEmailErr) setClienteEmailErr(!isValidEmail(e.target.value));
+                  }}
+                  onBlur={(e) => setClienteEmailErr(!isValidEmail(e.target.value))}
+                  className={clienteEmailErr ? "border-destructive focus-visible:ring-destructive" : ""}
+                />
+                {clienteEmailErr && (
+                  <p className="text-xs text-destructive mt-1">E-mail inválido. Use o formato nome@dominio.com</p>
+                )}
+              </div>
             </div>
+
+            {/* Endereço */}
             <div>
               <Label>Endereço</Label>
               <Input value={clienteForm.endereco} onChange={(e) => setClienteForm({ ...clienteForm, endereco: e.target.value })} />
             </div>
+
+            {/* Bairro + CEP */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Bairro</Label>
+                <Input value={clienteForm.bairro} onChange={(e) => setClienteForm({ ...clienteForm, bairro: e.target.value })} />
+              </div>
+              <div>
+                <Label>CEP</Label>
+                <Input value={clienteForm.cep} onChange={(e) => setClienteForm({ ...clienteForm, cep: e.target.value })} />
+              </div>
+            </div>
+
+            {/* Cidade + Estado */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Cidade</Label>
+                <Input value={clienteForm.cidade} onChange={(e) => setClienteForm({ ...clienteForm, cidade: e.target.value })} />
+              </div>
+              <div>
+                <Label>Estado</Label>
+                <Input value={clienteForm.estado} onChange={(e) => setClienteForm({ ...clienteForm, estado: e.target.value })} />
+              </div>
+            </div>
+
+            {/* Endereço de instalação */}
+            <div>
+              <Label>Endereço da obra / instalação</Label>
+              <Input value={clienteForm.endereco_instalacao} onChange={(e) => setClienteForm({ ...clienteForm, endereco_instalacao: e.target.value })} />
+            </div>
+
+            {/* Arquiteto */}
             <div>
               <Label>Arquiteto</Label>
               <Select value={clienteForm.arquiteto_id || "none"} onValueChange={(v) => setClienteForm({ ...clienteForm, arquiteto_id: v === "none" ? "" : v })}>
