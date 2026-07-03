@@ -12,8 +12,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Plus, Search, Edit, Copy, FileText, Trash2 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+
+const STATUS_BADGE: Record<string, string> = {
+  em_elaboracao:   "bg-gray-100 text-gray-600 border-gray-300 dark:bg-gray-800/60 dark:text-gray-400 dark:border-gray-600",
+  enviado_cliente: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-700",
+  aprovado:        "bg-green-100 text-green-700 border-green-300 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700",
+  cancelado:       "bg-red-100 text-red-700 border-red-300 dark:bg-red-900/30 dark:text-red-400 dark:border-red-700",
+};
 import { toast } from "sonner";
-import { brl, STATUS_LABELS } from "@/lib/format";
+import { brl, STATUS_LABELS, fmtOrcNumV } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/_authenticated/orcamentos/")({
@@ -28,6 +36,7 @@ function OrcamentosList() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [vendFilter, setVendFilter] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; numero: number | null; versao: string | null } | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -56,7 +65,8 @@ function OrcamentosList() {
       return (
         c.includes(s) ||
         r.nome_projeto?.toLowerCase().includes(s) ||
-        String(r.numero_orcamento).includes(s)
+        String(r.numero_orcamento).includes(s) ||
+        fmtOrcNumV(r.numero_orcamento, r.versao).toLowerCase().includes(s)
       );
     }
     return true;
@@ -65,10 +75,10 @@ function OrcamentosList() {
   const duplicate = async (id: string) => {
     const { data: orc } = await supabase.from("orcamentos").select("*").eq("id", id).single();
     if (!orc) return;
-    const { id: _i, numero_orcamento: _n, created_at: _c, updated_at: _u, ...rest } = orc;
+    const { id: _i, numero_orcamento: _n, created_at: _c, updated_at: _u, versao: _v, ...rest } = orc;
     const { data: novo, error } = await supabase
       .from("orcamentos")
-      .insert({ ...rest, vendedor_id: user!.id, status: "rascunho", nome_projeto: `${rest.nome_projeto} (cópia)` })
+      .insert({ ...rest, vendedor_id: user!.id, status: "em_elaboracao", nome_projeto: `${rest.nome_projeto} (cópia)` })
       .select()
       .single();
     if (error) return toast.error(error.message);
@@ -84,11 +94,12 @@ function OrcamentosList() {
     load();
   };
 
-  const remove = async (id: string) => {
-    if (!confirm("Excluir este orçamento?")) return;
-    const { error } = await supabase.from("orcamentos").delete().eq("id", id);
+  const doDelete = async () => {
+    if (!deleteTarget) return;
+    const { error } = await supabase.from("orcamentos").delete().eq("id", deleteTarget.id);
     if (error) return toast.error(error.message);
     toast.success("Excluído");
+    setDeleteTarget(null);
     load();
   };
 
@@ -164,7 +175,7 @@ function OrcamentosList() {
             )}
             {filtered.map((r) => (
               <TableRow key={r.id}>
-                <TableCell className="font-mono">#{r.numero_orcamento}</TableCell>
+                <TableCell className="font-mono">{fmtOrcNumV(r.numero_orcamento, r.versao)}</TableCell>
                 <TableCell>{r.clientes?.nome_razao_social ?? "—"}</TableCell>
                 <TableCell>{r.nome_projeto}</TableCell>
                 {isAdmin && (
@@ -173,8 +184,8 @@ function OrcamentosList() {
                   </TableCell>
                 )}
                 <TableCell>
-                  <Badge variant="outline" className="border-primary/40 text-primary">
-                    {STATUS_LABELS[r.status]}
+                  <Badge variant="outline" className={STATUS_BADGE[r.status] || "border-primary/40 text-primary"}>
+                    {STATUS_LABELS[r.status] || r.status}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-right font-medium">{brl(r.valor_final)}</TableCell>
@@ -189,7 +200,7 @@ function OrcamentosList() {
                     <Button size="icon" variant="ghost" title="Duplicar" onClick={() => duplicate(r.id)}>
                       <Copy className="h-4 w-4" />
                     </Button>
-                    <Button size="icon" variant="ghost" title="Excluir" onClick={() => remove(r.id)}>
+                    <Button size="icon" variant="ghost" title="Excluir" onClick={() => setDeleteTarget({ id: r.id, numero: r.numero_orcamento, versao: r.versao })}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -199,6 +210,20 @@ function OrcamentosList() {
           </TableBody>
         </Table>
       </Card>
+      <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Excluir orçamento</DialogTitle>
+            <DialogDescription>
+              Tem certeza que deseja excluir o orçamento <strong>{deleteTarget ? fmtOrcNumV(deleteTarget.numero, deleteTarget.versao) : ""}</strong>? Todos os itens deste orçamento também serão excluídos. Esta ação é permanente e não pode ser desfeita.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancelar</Button>
+            <Button variant="destructive" onClick={doDelete}>Excluir</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

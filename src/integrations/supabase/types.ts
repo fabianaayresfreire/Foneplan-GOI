@@ -163,12 +163,86 @@ export type Database = {
           },
         ]
       }
+      kit_itens: {
+        Row: {
+          categoria_produto: string | null
+          created_at: string
+          descricao: string
+          id: string
+          kit_id: string
+          ordem: number
+          produto_codigo: string | null
+          quantidade: number
+        }
+        Insert: {
+          categoria_produto?: string | null
+          created_at?: string
+          descricao: string
+          id?: string
+          kit_id: string
+          ordem?: number
+          produto_codigo?: string | null
+          quantidade?: number
+        }
+        Update: {
+          categoria_produto?: string | null
+          created_at?: string
+          descricao?: string
+          id?: string
+          kit_id?: string
+          ordem?: number
+          produto_codigo?: string | null
+          quantidade?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "kit_itens_kit_id_fkey"
+            columns: ["kit_id"]
+            isOneToOne: false
+            referencedRelation: "kits"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      kits: {
+        Row: {
+          categoria: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          nome: string
+          status: boolean
+          tipo: string
+        }
+        Insert: {
+          categoria?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          nome: string
+          status?: boolean
+          tipo?: string
+        }
+        Update: {
+          categoria?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          nome?: string
+          status?: boolean
+          tipo?: string
+        }
+        Relationships: []
+      }
       orcamento_itens: {
         Row: {
           ambiente_id: string | null
+          ambiente_nome: string | null
           created_at: string
           desconto_item: number
           id: string
+          kit_nome: string | null
+          nome_fantasia: string | null
           observacao: string | null
           orcamento_id: string
           ordem_exibicao: number
@@ -184,9 +258,12 @@ export type Database = {
         }
         Insert: {
           ambiente_id?: string | null
+          ambiente_nome?: string | null
           created_at?: string
           desconto_item?: number
           id?: string
+          kit_nome?: string | null
+          nome_fantasia?: string | null
           observacao?: string | null
           orcamento_id: string
           ordem_exibicao?: number
@@ -202,9 +279,12 @@ export type Database = {
         }
         Update: {
           ambiente_id?: string | null
+          ambiente_nome?: string | null
           created_at?: string
           desconto_item?: number
           id?: string
+          kit_nome?: string | null
+          nome_fantasia?: string | null
           observacao?: string | null
           orcamento_id?: string
           ordem_exibicao?: number
@@ -252,6 +332,7 @@ export type Database = {
       orcamentos: {
         Row: {
           cliente_id: string
+          condicoes_pagamento: string | null
           created_at: string
           desconto: number
           garantia: string | null
@@ -267,9 +348,11 @@ export type Database = {
           valor_bruto: number
           valor_final: number
           vendedor_id: string
+          versao: string | null
         }
         Insert: {
           cliente_id: string
+          condicoes_pagamento?: string | null
           created_at?: string
           desconto?: number
           garantia?: string | null
@@ -285,9 +368,11 @@ export type Database = {
           valor_bruto?: number
           valor_final?: number
           vendedor_id: string
+          versao?: string | null
         }
         Update: {
           cliente_id?: string
+          condicoes_pagamento?: string | null
           created_at?: string
           desconto?: number
           garantia?: string | null
@@ -303,6 +388,7 @@ export type Database = {
           valor_bruto?: number
           valor_final?: number
           vendedor_id?: string
+          versao?: string | null
         }
         Relationships: [
           {
@@ -329,6 +415,7 @@ export type Database = {
           marca: string | null
           modelo: string | null
           msrp: number
+          nome_fantasia: string | null
           sku: string | null
           status: boolean
           titulo: string
@@ -342,6 +429,7 @@ export type Database = {
           marca?: string | null
           modelo?: string | null
           msrp?: number
+          nome_fantasia?: string | null
           sku?: string | null
           status?: boolean
           titulo: string
@@ -355,6 +443,7 @@ export type Database = {
           marca?: string | null
           modelo?: string | null
           msrp?: number
+          nome_fantasia?: string | null
           sku?: string | null
           status?: boolean
           titulo?: string
@@ -365,6 +454,7 @@ export type Database = {
       }
       profiles: {
         Row: {
+          celular: string | null
           created_at: string
           email: string
           id: string
@@ -372,6 +462,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          celular?: string | null
           created_at?: string
           email: string
           id: string
@@ -379,6 +470,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          celular?: string | null
           created_at?: string
           email?: string
           id?: string
@@ -448,21 +540,17 @@ export type Database = {
     Enums: {
       app_role: "admin" | "vendedor"
       orcamento_status:
-        | "rascunho"
         | "em_elaboracao"
-        | "em_revisao"
         | "enviado_cliente"
-        | "em_negociacao"
         | "aprovado"
-        | "reprovado"
         | "cancelado"
-        | "proxima_fase"
-        | "finalizado"
       tipo_item:
         | "venda_normal"
+        | "cabos"
         | "cliente"
         | "cortesia"
         | "fase_anterior"
+        | "mao_de_obra"
         | "proxima_fase"
         | "opcional"
         | "nao_incluso"
@@ -596,22 +684,18 @@ export const Constants = {
     Enums: {
       app_role: ["admin", "vendedor"],
       orcamento_status: [
-        "rascunho",
         "em_elaboracao",
-        "em_revisao",
         "enviado_cliente",
-        "em_negociacao",
         "aprovado",
-        "reprovado",
         "cancelado",
-        "proxima_fase",
-        "finalizado",
       ],
       tipo_item: [
         "venda_normal",
+        "cabos",
         "cliente",
         "cortesia",
         "fase_anterior",
+        "mao_de_obra",
         "proxima_fase",
         "opcional",
         "nao_incluso",

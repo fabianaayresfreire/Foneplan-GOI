@@ -6,7 +6,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { supabase } from "@/integrations/supabase/client";
 import {
   FileText, Users, Building2, Package, LayoutGrid, Tag,
-  LogOut, ShieldCheck, Boxes, Menu,
+  LogOut, ShieldCheck, Boxes, Menu, Layers,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import logo from "@/assets/foneplan-logo.png";
@@ -37,6 +37,7 @@ function Layout() {
     { to: "/clientes", label: "Clientes", icon: Users, show: true },
     { to: "/arquitetos", label: "Arquitetos", icon: Building2, show: true },
     { to: "/produtos", label: "Produtos", icon: Package, show: isAdmin },
+    { to: "/kits", label: "Kits", icon: Layers, show: isAdmin },
     { to: "/segmentos", label: "Segmentos", icon: LayoutGrid, show: isAdmin },
     { to: "/ambientes", label: "Ambientes", icon: Tag, show: isAdmin },
     { to: "/usuarios", label: "Usuários", icon: ShieldCheck, show: isAdmin },
@@ -56,7 +57,7 @@ function Layout() {
         </div>
       </div>
       <Separator className="bg-sidebar-border" />
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+      <nav className="flex-1 min-h-0 p-3 space-y-1 overflow-y-auto">
         {navItems.filter(i => i.show).map(({ to, label, icon: Icon }) => {
           const active = loc.pathname.startsWith(to);
           return (
@@ -111,22 +112,31 @@ function Layout() {
       </aside>
 
       <main className="flex-1 overflow-auto min-w-0">
-        {/* Mobile top bar */}
-        <header className="md:hidden sticky top-0 z-30 flex items-center gap-2 h-14 px-3 border-b border-sidebar-border bg-sidebar">
-          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="text-sidebar-foreground">
-                <Menu className="h-5 w-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-72 bg-sidebar border-sidebar-border flex flex-col">
-              {SidebarBody}
-            </SheetContent>
-          </Sheet>
-          <div className="flex items-center gap-2">
-            <img src={logo} alt="" width={28} height={28} />
-            <div className="font-bold tracking-tight text-sidebar-foreground text-sm">
-              FONEPLAN <span className="text-primary">GOI</span>
+        {/* Mobile top bar — safe area no topo (status bar / notch) */}
+        <header
+          className="md:hidden sticky top-0 z-30 border-b border-sidebar-border bg-sidebar"
+          style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
+        >
+          <div className="flex items-center gap-2 h-14 px-3">
+            <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="text-sidebar-foreground">
+                  <Menu className="h-5 w-5" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent
+                side="left"
+                className="p-0 w-72 bg-sidebar border-sidebar-border flex flex-col h-full overflow-hidden"
+                style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
+              >
+                {SidebarBody}
+              </SheetContent>
+            </Sheet>
+            <div className="flex items-center gap-2">
+              <img src={logo} alt="" width={28} height={28} />
+              <div className="font-bold tracking-tight text-sidebar-foreground text-sm">
+                FONEPLAN <span className="text-primary">GOI</span>
+              </div>
             </div>
           </div>
         </header>

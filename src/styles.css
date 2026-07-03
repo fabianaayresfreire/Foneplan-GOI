@@ -82,6 +82,7 @@
 
 @layer base {
   * { border-color: var(--color-border); }
+  html { overflow-x: clip; }
   html, body { background-color: var(--color-background); color: var(--color-foreground); }
   body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 }

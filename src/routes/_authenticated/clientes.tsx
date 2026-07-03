@@ -6,13 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Edit, Search, Loader2 } from "lucide-react";
+import { Plus, Edit, Search, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
-import { maskCpfCnpj, maskCep, fetchViaCep } from "@/lib/masks";
+import { maskCpfCnpj, maskCep, maskPhone, fetchViaCep } from "@/lib/masks";
 
 export const Route = createFileRoute("/_authenticated/clientes")({ component: ClientesPage });
 
@@ -26,9 +26,9 @@ const empty = {
   informacoes_adicionais: "",
 };
 
-/** Retorna true se o e-mail for válido OU vazio (campo opcional). */
-const isValidEmail = (v: string) => {
-  if (!v.trim()) return true;
+/** Retorna true se o e-mail for válido OU vazio/nulo (campo opcional). */
+const isValidEmail = (v: string | null | undefined) => {
+  if (!v || !v.trim()) return true;
   return /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.trim());
 };
 
@@ -43,6 +43,7 @@ function ClientesPage() {
   const [edit, setEdit]       = useState<any>(null);
   const [form, setForm]       = useState<any>(empty);
   const [emailErrors, setEmailErrors] = useState(emptyEmailErrors);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; nome: string } | null>(null);
 
   // CEP lookup state
   const [cepLoading, setCepLoading] = useState(false);
@@ -105,7 +106,9 @@ function ClientesPage() {
     setEmailErrors(errs);
     if (errs.email || errs.emailResponsavel) return toast.error("Corrija os e-mails inválidos.");
 
-    const payload = { ...form, arquiteto_id: form.arquiteto_id || null };
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { arquitetos: _arqJoin, numero_cliente: _num, id: _id, created_at: _ca, updated_at: _ua, created_by: _cb, ...formData } = form;
+    const payload = { ...formData, arquiteto_id: form.arquiteto_id || null };
     if (edit) {
       const { error } = await supabase.from("clientes").update(payload).eq("id", edit.id);
       if (error) return toast.error(error.message);
@@ -114,6 +117,25 @@ function ClientesPage() {
       if (error) return toast.error(error.message);
     }
     toast.success("Salvo"); setOpen(false); load();
+  };
+
+  const doDelete = async () => {
+    if (!deleteTarget) return;
+    // Verifica orçamentos vinculados antes de deletar
+    const { count } = await supabase
+      .from("orcamentos")
+      .select("id", { count: "exact", head: true })
+      .eq("cliente_id", deleteTarget.id);
+    if (count && count > 0) {
+      toast.error("Não é possível excluir: este cliente possui orçamentos vinculados. Edite o cliente caso necessário.");
+      setDeleteTarget(null);
+      return;
+    }
+    const { error } = await supabase.from("clientes").delete().eq("id", deleteTarget.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success(`Cliente "${deleteTarget.nome}" excluído.`);
+    setDeleteTarget(null);
+    load();
   };
 
   const filtered = rows.filter(r => {
@@ -154,7 +176,7 @@ function ClientesPage() {
               <TableHead>CPF/CNPJ</TableHead>
               <TableHead>Cidade/UF</TableHead>
               <TableHead>Arquiteto</TableHead>
-              <TableHead className="w-20"></TableHead>
+              <TableHead className="w-24"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -166,9 +188,14 @@ function ClientesPage() {
                 <TableCell>{[r.cidade, r.estado].filter(Boolean).join("/") || "—"}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{r.arquitetos?.nome || "—"}</TableCell>
                 <TableCell>
-                  <Button size="icon" variant="ghost" onClick={() => openEdit(r)}>
-                    <Edit className="h-4 w-4" />
-                  </Button>
+                  <div className="flex gap-1">
+                    <Button size="icon" variant="ghost" onClick={() => openEdit(r)}>
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => setDeleteTarget({ id: r.id, nome: r.nome_razao_social })}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -182,6 +209,22 @@ function ClientesPage() {
           </TableBody>
         </Table>
       </Card>
+
+      {/* ── Dialog de confirmação de exclusão ──────────────────────────────── */}
+      <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Excluir cliente</DialogTitle>
+            <DialogDescription>
+              Tem certeza que deseja excluir <strong>"{deleteTarget?.nome}"</strong>? Todos os orçamentos vinculados a este cliente também serão excluídos. Esta ação é permanente e não pode ser desfeita.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancelar</Button>
+            <Button variant="destructive" onClick={doDelete}>Excluir</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Dialog de cadastro ─────────────────────────────────────────────── */}
       <Dialog open={open} onOpenChange={setOpen}>
@@ -237,20 +280,20 @@ function ClientesPage() {
               )}
             </div>
 
-            {/* Telefone — sem limite (1.3) */}
             <div>
               <Label>Telefone</Label>
               <Input value={form.telefone}
-                onChange={(e) => setForm({ ...form, telefone: e.target.value })}
-                placeholder="Ex.: +55 15 99999-9999" />
+                onChange={(e) => setForm({ ...form, telefone: maskPhone(e.target.value) })}
+                placeholder="(15) 3224-2316"
+                maxLength={15} />
             </div>
 
-            {/* Celular — sem limite (1.3) */}
             <div>
               <Label>Celular</Label>
               <Input value={form.celular}
-                onChange={(e) => setForm({ ...form, celular: e.target.value })}
-                placeholder="Ex.: +55 15 99999-9999" />
+                onChange={(e) => setForm({ ...form, celular: maskPhone(e.target.value) })}
+                placeholder="(15) 99999-9999"
+                maxLength={15} />
             </div>
 
             {/* CEP com busca ViaCEP (1.4) */}
@@ -314,7 +357,9 @@ function ClientesPage() {
             <div>
               <Label>Celular do responsável</Label>
               <Input value={form.celular_responsavel_obra}
-                onChange={(e) => setForm({ ...form, celular_responsavel_obra: e.target.value })} />
+                onChange={(e) => setForm({ ...form, celular_responsavel_obra: maskPhone(e.target.value) })}
+                placeholder="(15) 99999-9999"
+                maxLength={15} />
             </div>
 
             {/* E-mail do responsável com validação */}

@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedUsuariosRouteImport } from './routes/_authenticated/usuarios'
 import { Route as AuthenticatedSegmentosRouteImport } from './routes/_authenticated/segmentos'
 import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticated/produtos'
+import { Route as AuthenticatedKitsRouteImport } from './routes/_authenticated/kits'
 import { Route as AuthenticatedClientesRouteImport } from './routes/_authenticated/clientes'
 import { Route as AuthenticatedArquitetosRouteImport } from './routes/_authenticated/arquitetos'
 import { Route as AuthenticatedAmbientesRouteImport } from './routes/_authenticated/ambientes'
@@ -50,6 +51,11 @@ const AuthenticatedSegmentosRoute = AuthenticatedSegmentosRouteImport.update({
 const AuthenticatedProdutosRoute = AuthenticatedProdutosRouteImport.update({
   id: '/produtos',
   path: '/produtos',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedKitsRoute = AuthenticatedKitsRouteImport.update({
+  id: '/kits',
+  path: '/kits',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
 const AuthenticatedClientesRoute = AuthenticatedClientesRouteImport.update({
@@ -98,6 +104,7 @@ export interface FileRoutesByFullPath {
   '/ambientes': typeof AuthenticatedAmbientesRoute
   '/arquitetos': typeof AuthenticatedArquitetosRoute
   '/clientes': typeof AuthenticatedClientesRoute
+  '/kits': typeof AuthenticatedKitsRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/segmentos': typeof AuthenticatedSegmentosRoute
   '/usuarios': typeof AuthenticatedUsuariosRoute
@@ -112,6 +119,7 @@ export interface FileRoutesByTo {
   '/ambientes': typeof AuthenticatedAmbientesRoute
   '/arquitetos': typeof AuthenticatedArquitetosRoute
   '/clientes': typeof AuthenticatedClientesRoute
+  '/kits': typeof AuthenticatedKitsRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/segmentos': typeof AuthenticatedSegmentosRoute
   '/usuarios': typeof AuthenticatedUsuariosRoute
@@ -128,6 +136,7 @@ export interface FileRoutesById {
   '/_authenticated/ambientes': typeof AuthenticatedAmbientesRoute
   '/_authenticated/arquitetos': typeof AuthenticatedArquitetosRoute
   '/_authenticated/clientes': typeof AuthenticatedClientesRoute
+  '/_authenticated/kits': typeof AuthenticatedKitsRoute
   '/_authenticated/produtos': typeof AuthenticatedProdutosRoute
   '/_authenticated/segmentos': typeof AuthenticatedSegmentosRoute
   '/_authenticated/usuarios': typeof AuthenticatedUsuariosRoute
@@ -144,6 +153,7 @@ export interface FileRouteTypes {
     | '/ambientes'
     | '/arquitetos'
     | '/clientes'
+    | '/kits'
     | '/produtos'
     | '/segmentos'
     | '/usuarios'
@@ -158,6 +168,7 @@ export interface FileRouteTypes {
     | '/ambientes'
     | '/arquitetos'
     | '/clientes'
+    | '/kits'
     | '/produtos'
     | '/segmentos'
     | '/usuarios'
@@ -173,6 +184,7 @@ export interface FileRouteTypes {
     | '/_authenticated/ambientes'
     | '/_authenticated/arquitetos'
     | '/_authenticated/clientes'
+    | '/_authenticated/kits'
     | '/_authenticated/produtos'
     | '/_authenticated/segmentos'
     | '/_authenticated/usuarios'
@@ -230,6 +242,13 @@ declare module '@tanstack/react-router' {
       path: '/produtos'
       fullPath: '/produtos'
       preLoaderRoute: typeof AuthenticatedProdutosRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/kits': {
+      id: '/_authenticated/kits'
+      path: '/kits'
+      fullPath: '/kits'
+      preLoaderRoute: typeof AuthenticatedKitsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/clientes': {
@@ -302,6 +321,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedAmbientesRoute: typeof AuthenticatedAmbientesRoute
   AuthenticatedArquitetosRoute: typeof AuthenticatedArquitetosRoute
   AuthenticatedClientesRoute: typeof AuthenticatedClientesRoute
+  AuthenticatedKitsRoute: typeof AuthenticatedKitsRoute
   AuthenticatedProdutosRoute: typeof AuthenticatedProdutosRoute
   AuthenticatedSegmentosRoute: typeof AuthenticatedSegmentosRoute
   AuthenticatedUsuariosRoute: typeof AuthenticatedUsuariosRoute
@@ -314,6 +334,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAmbientesRoute: AuthenticatedAmbientesRoute,
   AuthenticatedArquitetosRoute: AuthenticatedArquitetosRoute,
   AuthenticatedClientesRoute: AuthenticatedClientesRoute,
+  AuthenticatedKitsRoute: AuthenticatedKitsRoute,
   AuthenticatedProdutosRoute: AuthenticatedProdutosRoute,
   AuthenticatedSegmentosRoute: AuthenticatedSegmentosRoute,
   AuthenticatedUsuariosRoute: AuthenticatedUsuariosRoute,
@@ -334,3 +355,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

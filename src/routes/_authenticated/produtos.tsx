@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,8 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Edit, Search, Upload, Download } from "lucide-react";
+import { Plus, Edit, Search, Upload, Download, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { brl } from "@/lib/format";
 
@@ -24,11 +25,12 @@ export const Route = createFileRoute("/_authenticated/produtos")({
   component: Page,
 });
 
-const empty = { sku: "", titulo: "", marca: "", modelo: "", categoria: "", msrp: 0, unidade: "un", status: true };
+const empty = { sku: "", titulo: "", nome_fantasia: "", marca: "", modelo: "", categoria: "", msrp: 0, unidade: "un", status: true };
 
 type ParsedRow = {
   sku: string | null;
   titulo: string;
+  nome_fantasia: string | null;
   marca: string | null;
   modelo: string | null;
   categoria: string | null;
@@ -52,9 +54,11 @@ const norm = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
 const COL_MAP: Record<string, keyof ParsedRow> = {
   sku: "sku", codigo: "sku", code: "sku",
   titulo: "titulo", title: "titulo", nome: "titulo", produto: "titulo", descricao: "titulo",
+  nomefantasia: "nome_fantasia", fantasia: "nome_fantasia", apelido: "nome_fantasia",
   marca: "marca", brand: "marca",
   modelo: "modelo", model: "modelo",
   categoria: "categoria", category: "categoria",
+  segmento: "categoria", segmentocategoria: "categoria", segcat: "categoria",
   unidade: "unidade", un: "unidade", unit: "unidade",
   msrp: "msrp", preco: "msrp", precounitario: "msrp", valor: "msrp", price: "msrp",
 };
@@ -62,9 +66,17 @@ const COL_MAP: Record<string, keyof ParsedRow> = {
 function Page() {
   const [rows, setRows] = useState<any[]>([]);
   const [search, setSearch] = useState("");
+  const [filterMarca, setFilterMarca] = useState("");
+  const [filterModelo, setFilterModelo] = useState("");
+  const [filterCategoria, setFilterCategoria] = useState("");
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<any>(null);
   const [form, setForm] = useState<any>(empty);
+  const [archiveTarget, setArchiveTarget] = useState<{ id: string; nome: string } | null>(null);
+
+  // ── Paginação ────────────────────────────────────────────────────────────────
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(1);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -74,18 +86,46 @@ function Page() {
   const [importing, setImporting] = useState(false);
 
   const load = async () => {
-    const { data } = await supabase
-      .from("produtos")
-      .select("*")
-      .order("categoria", { ascending: true, nullsFirst: false })
-      .order("titulo");
-    setRows(data || []);
+    const PAGE = 1000;
+    let from = 0;
+    let all: any[] = [];
+    while (true) {
+      const { data, error } = await supabase
+        .from("produtos")
+        .select("*")
+        .order("categoria", { ascending: true, nullsFirst: false })
+        .order("titulo")
+        .range(from, from + PAGE - 1);
+      if (error || !data || data.length === 0) break;
+      all = all.concat(data);
+      if (data.length < PAGE) break;
+      from += PAGE;
+    }
+    setRows(all);
   };
   useEffect(() => { load(); }, []);
 
+  // Listas em cascata derivadas dos dados já carregados
+  const allMarcas = useMemo(() =>
+    [...new Set(rows.map((r: any) => r.marca).filter(Boolean))].sort() as string[],
+  [rows]);
+
+  const allModelos = useMemo(() => {
+    const base = filterMarca ? rows.filter((r: any) => r.marca === filterMarca) : rows;
+    return [...new Set(base.map((r: any) => r.modelo).filter(Boolean))].sort() as string[];
+  }, [rows, filterMarca]);
+
+  // Ao trocar marca, limpa modelo e volta para página 1
+  useEffect(() => { setFilterModelo(""); setPage(1); }, [filterMarca]);
+
+  // Reseta para página 1 sempre que qualquer filtro mudar
+  useEffect(() => { setPage(1); }, [search, filterMarca, filterModelo, filterCategoria]);
+
   const save = async () => {
     if (!form.titulo.trim()) return toast.error("Título obrigatório");
-    const payload = { ...form, msrp: Number(form.msrp) || 0 };
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { nome_fantasia: _nf, ...rest } = form;
+    const payload = { ...rest, msrp: Number(form.msrp) || 0, sku: form.sku?.trim() || null };
     if (edit) {
       const { error } = await supabase.from("produtos").update(payload).eq("id", edit.id);
       if (error) return toast.error(error.message);
@@ -96,18 +136,48 @@ function Page() {
     toast.success("Salvo"); setOpen(false); load();
   };
 
-  const filtered = rows.filter(r => !search ||
-    r.titulo?.toLowerCase().includes(search.toLowerCase()) ||
-    r.sku?.toLowerCase().includes(search.toLowerCase()) ||
-    r.marca?.toLowerCase().includes(search.toLowerCase())
-  );
+  const doArchive = async () => {
+    if (!archiveTarget) return;
+    const { count } = await supabase.from("orcamento_itens").select("id", { count: "exact", head: true }).eq("produto_id", archiveTarget.id);
+    if (count && count > 0) {
+      toast.error(`Não é possível excluir: "${archiveTarget.nome}" está em ${count} item(ns) de orçamento. Produto arquivado (oculto em novos orçamentos).`);
+      await supabase.from("produtos").update({ status: false }).eq("id", archiveTarget.id);
+      setArchiveTarget(null);
+      load();
+      return;
+    }
+    const { error } = await supabase.from("produtos").delete().eq("id", archiveTarget.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success(`"${archiveTarget.nome}" excluído`);
+    setArchiveTarget(null);
+    load();
+  };
+
+  const filtered = rows.filter(r => {
+    const s = search.toLowerCase();
+    if (s && !(
+      r.titulo?.toLowerCase().includes(s) ||
+      r.sku?.toLowerCase().includes(s) ||
+      r.nome_fantasia?.toLowerCase().includes(s)
+    )) return false;
+    if (filterMarca && r.marca !== filterMarca) return false;
+    if (filterModelo && r.modelo !== filterModelo) return false;
+    if (filterCategoria && !r.categoria?.toLowerCase().includes(filterCategoria.toLowerCase())) return false;
+    return true;
+  });
+  const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paginated   = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const downloadTemplate = () => {
     const ws = XLSX.utils.aoa_to_sheet([
-      ["sku", "titulo", "marca", "modelo", "categoria", "unidade", "msrp"],
-      ["FP-001", "Caixa Acústica 6\"", "Foneplan", "FP6", "Áudio", "un", "1250,00"],
-      ["FP-002", "Amplificador 4ch 200W", "Foneplan", "AMP4-200", "Áudio", "un", "3499,90"],
+      ["codigo", "nome", "Nome Fantasia", "marca", "segmento", "preco"],
+      ["FP-001", "Caixa Acústica de Embutir 6 Polegadas 30W RMS", "Caixa Slim 6\"", "Foneplan", "Áudio", "1250,00"],
+      ["FP-002", "Amplificador Multi-Room 4 Canais 200W", "Amp MR-4", "Foneplan", "Áudio", "3499,90"],
+      ["FP-003", "Módulo de Relê 8 Canais ON/OFF 12V", "Relê Smart 8ch", "Foneplan", "Automação", "890,00"],
+      ["FP-004", "Painel de Controle Touch 7 Polegadas", "Touch Panel 7\"", "Foneplan", "Iluminação", "2100,00"],
     ]);
+    // ajusta largura das colunas
+    ws["!cols"] = [{ wch: 10 }, { wch: 45 }, { wch: 25 }, { wch: 12 }, { wch: 14 }, { wch: 10 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Produtos");
     XLSX.writeFile(wb, "modelo-produtos.xlsx");
@@ -136,6 +206,7 @@ function Page() {
         parsed.push({
           sku: row.sku ? String(row.sku).trim() : null,
           titulo,
+          nome_fantasia: row.nome_fantasia ? String(row.nome_fantasia).trim() : null,
           marca: row.marca ? String(row.marca).trim() : null,
           modelo: row.modelo ? String(row.modelo).trim() : null,
           categoria: row.categoria ? String(row.categoria).trim() : null,
@@ -174,28 +245,41 @@ function Page() {
     const toInsert: any[] = [];
     const toUpdate: { id: string; data: any }[] = [];
     importRows.forEach(r => {
-      const data = { ...r };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { nome_fantasia: _nf, ...data } = r; // strip until DB migration for nome_fantasia runs
       if (r.sku && existingMap.has(r.sku)) toUpdate.push({ id: existingMap.get(r.sku)!, data });
       else toInsert.push(data);
     });
 
+    let firstError: string | null = null;
+
     // batch insert
     for (let i = 0; i < toInsert.length; i += 200) {
       const chunk = toInsert.slice(i, i + 200);
-      const { error, count } = await supabase.from("produtos").insert(chunk, { count: "exact" });
-      if (error) failed += chunk.length;
-      else inserted += count ?? chunk.length;
+      const { error, data: inserted_data } = await supabase.from("produtos").insert(chunk).select("id");
+      if (error) {
+        failed += chunk.length;
+        if (!firstError) firstError = error.message;
+      } else {
+        inserted += inserted_data?.length ?? chunk.length;
+      }
     }
     // updates one by one
     for (const u of toUpdate) {
       const { error } = await supabase.from("produtos").update(u.data).eq("id", u.id);
-      if (error) failed++; else updated++;
+      if (error) { failed++; if (!firstError) firstError = error.message; }
+      else updated++;
     }
 
     setImporting(false);
     setImportOpen(false);
     setImportRows([]);
-    toast.success(`Importação concluída: ${inserted} inseridos, ${updated} atualizados${failed ? `, ${failed} com erro` : ""}`);
+    if (firstError && inserted === 0 && updated === 0) {
+      toast.error(`Importação falhou: ${firstError}`);
+    } else {
+      toast.success(`Importação concluída: ${inserted} inserido${inserted !== 1 ? "s" : ""}, ${updated} atualizado${updated !== 1 ? "s" : ""}${failed ? ` — ${failed} com erro` : ""}`);
+      if (firstError) toast.error(`Alguns registros falharam: ${firstError}`);
+    }
     load();
   };
 
@@ -226,12 +310,46 @@ function Page() {
         </div>
       </div>
 
-      <Card className="p-4 mb-4">
-        <div className="relative">
-          <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input className="pl-9" placeholder="Buscar por título, SKU, marca..." value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-      </Card>
+      <div className="sticky top-14 md:top-0 z-10 bg-background pb-3">
+        <Card className="p-4">
+          <div className="flex flex-wrap gap-2">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input className="pl-9" placeholder="Nome / SKU / nome fantasia..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <select
+              className="h-9 w-36 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              value={filterMarca}
+              onChange={(e) => setFilterMarca(e.target.value)}
+            >
+              <option value="">Marca</option>
+              {allMarcas.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <select
+              className="h-9 w-36 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+              value={filterModelo}
+              onChange={(e) => setFilterModelo(e.target.value)}
+              disabled={allModelos.length === 0}
+            >
+              <option value="">Modelo</option>
+              {allModelos.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <Input className="w-40" placeholder="Categoria" value={filterCategoria} onChange={(e) => setFilterCategoria(e.target.value)} />
+            {(search || filterMarca || filterModelo || filterCategoria) && (
+              <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => { setSearch(""); setFilterMarca(""); setFilterModelo(""); setFilterCategoria(""); }}>
+                Limpar
+              </Button>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {/* Contador de resultados */}
+      {filtered.length > 0 && (
+        <p className="text-xs text-muted-foreground mb-2 text-right">
+          {filtered.length} produto{filtered.length !== 1 ? "s" : ""} encontrado{filtered.length !== 1 ? "s" : ""}
+        </p>
+      )}
 
       <Card>
         <Table>
@@ -252,8 +370,8 @@ function Page() {
             )}
             {(() => {
               // Agrupa por categoria mantendo a ordem já vinda do banco (categoria → titulo)
-              const groups: { cat: string; items: typeof filtered }[] = [];
-              filtered.forEach(r => {
+              const groups: { cat: string; items: typeof paginated }[] = [];
+              paginated.forEach(r => {
                 const cat = r.categoria || "Sem categoria";
                 const last = groups[groups.length - 1];
                 if (last && last.cat === cat) last.items.push(r);
@@ -273,24 +391,84 @@ function Page() {
                     <TableCell>{r.categoria || "—"}</TableCell>
                     <TableCell className="text-right">{brl(r.msrp)}</TableCell>
                     <TableCell>{r.status ? <span className="text-green-600">Ativo</span> : <span className="text-muted-foreground">Inativo</span>}</TableCell>
-                    <TableCell><Button size="icon" variant="ghost" onClick={() => { setEdit(r); setForm({ ...empty, ...r }); setOpen(true); }}><Edit className="h-4 w-4" /></Button></TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        <Button size="icon" variant="ghost" onClick={() => { setEdit(r); setForm({ ...empty, ...r }); setOpen(true); }}><Edit className="h-4 w-4" /></Button>
+                        <Button size="icon" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => setArchiveTarget({ id: r.id, nome: r.titulo })}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 )),
               ]);
             })()}
           </TableBody>
         </Table>
+
+        {/* ── Paginação ─────────────────────────────────────────────────── */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-4 p-4 border-t border-border">
+            <Button
+              variant="outline" size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage(p => p - 1)}
+            >
+              Anterior
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Página {page} de {totalPages}
+            </span>
+            <Button
+              variant="outline" size="sm"
+              disabled={page >= totalPages}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Próximo
+            </Button>
+          </div>
+        )}
       </Card>
+
+      {/* Dialog de confirmação de arquivo */}
+      <Dialog open={!!archiveTarget} onOpenChange={(o) => { if (!o) setArchiveTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Excluir produto</DialogTitle>
+            <DialogDescription>
+              Tem certeza que deseja excluir <strong>"{archiveTarget?.nome}"</strong>?
+              Se o produto estiver em orçamentos existentes, será arquivado (oculto) em vez de excluído permanentemente.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setArchiveTarget(null)}>Cancelar</Button>
+            <Button variant="destructive" onClick={doArchive}>Excluir</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>{edit ? "Editar produto" : "Novo produto"}</DialogTitle></DialogHeader>
           <div className="grid grid-cols-2 gap-3">
             <div><Label>SKU</Label><Input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} /></div>
-            <div><Label>Unidade</Label><Input value={form.unidade} onChange={(e) => setForm({ ...form, unidade: e.target.value })} /></div>
+            <div>
+              <Label>Unidade</Label>
+              <Select value={form.unidade} onValueChange={v => setForm({ ...form, unidade: v })}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="un">un — Unidade</SelectItem>
+                  <SelectItem value="pr">pr — Par</SelectItem>
+                  <SelectItem value="pç">pç — Peça</SelectItem>
+                  <SelectItem value="m">m — Metro</SelectItem>
+                  <SelectItem value="kt">kt — Kit</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="col-span-2"><Label>Título *</Label><Input value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} /></div>
             <div><Label>Marca</Label><Input value={form.marca} onChange={(e) => setForm({ ...form, marca: e.target.value })} /></div>
             <div><Label>Modelo</Label><Input value={form.modelo} onChange={(e) => setForm({ ...form, modelo: e.target.value })} /></div>
+            <div className="col-span-2"><Label>Nome Fantasia <span className="text-muted-foreground text-xs">(opcional — exibido no orçamento e no PDF)</span></Label><Input value={form.nome_fantasia} placeholder="Ex.: Módulo relê de 12 canais ON/OFF" onChange={(e) => setForm({ ...form, nome_fantasia: e.target.value })} /></div>
             <div><Label>Categoria</Label><Input value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })} /></div>
             <div><Label>MSRP (R$)</Label><Input type="number" step="0.01" value={form.msrp} onChange={(e) => setForm({ ...form, msrp: e.target.value })} /></div>
             <div className="col-span-2 flex items-center gap-2"><Switch checked={form.status} onCheckedChange={(v) => setForm({ ...form, status: v })} /><Label>Ativo (visível para novos orçamentos)</Label></div>

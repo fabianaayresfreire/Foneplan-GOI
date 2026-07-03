@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -16,9 +16,11 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, Save, FileText, ArrowLeft, UserPlus, Loader2 } from "lucide-react";
-import { brl, STATUS_LABELS, TIPO_ITEM_LABELS } from "@/lib/format";
-import { maskCpfCnpj, maskCep, fetchViaCep } from "@/lib/masks";
+import { Plus, Trash2, Save, FileText, ArrowLeft, UserPlus, Loader2, Package, Wrench, Cable, ChevronsUpDown, Search, X, ChevronUp, ChevronDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { brl, STATUS_LABELS, TIPO_ITEM_LABELS, fmtOrcNum, fmtOrcNumV } from "@/lib/format";
+import { produtoLabel } from "@/components/ProdutoCombobox";
+import { maskCpfCnpj, maskCep, maskPhone, fetchViaCep } from "@/lib/masks";
 import { useAuth } from "@/lib/auth";
 import { Link } from "@tanstack/react-router";
 import { ProdutoCombobox } from "@/components/ProdutoCombobox";
@@ -28,9 +30,12 @@ type Item = {
   id?: string;
   segmento_id: string | null;
   ambiente_id: string | null;
+  ambiente_nome?: string | null;
+  kit_nome?: string | null;
   produto_id: string | null;
   produto_titulo: string;
   produto_sku?: string | null;
+  nome_fantasia?: string | null;
   quantidade: number;
   unidade: string;
   preco_unitario: number;
@@ -40,6 +45,94 @@ type Item = {
   observacao?: string | null;
   ordem_exibicao: number;
 };
+
+// ── Kit definitions ────────────────────────────────────────────────────────────
+type KitDef = {
+  id: string;
+  categoria: string;
+  nome: string;
+  composicao: string;
+  itens: { descricao: string; quantidade: number }[];
+};
+
+const KITS: KitDef[] = [
+  {
+    id: "kit-51",
+    categoria: "Áudio e Vídeo",
+    nome: "Kit 5.1",
+    composicao: "5 caixas de som + 1 Subwoofer + 1 Receptor",
+    itens: [
+      { descricao: "Caixa de som", quantidade: 5 },
+      { descricao: "Subwoofer", quantidade: 1 },
+      { descricao: "Receptor", quantidade: 1 },
+    ],
+  },
+  {
+    id: "kit-71",
+    categoria: "Áudio e Vídeo",
+    nome: "Kit 7.1",
+    composicao: "7 caixas de som + 1 Subwoofer + 1 Receptor",
+    itens: [
+      { descricao: "Caixa de som", quantidade: 7 },
+      { descricao: "Subwoofer", quantidade: 1 },
+      { descricao: "Receptor", quantidade: 1 },
+    ],
+  },
+  {
+    id: "aut-32",
+    categoria: "Automação",
+    nome: "Automação 32 circuitos",
+    composicao: "1 Fonte + 2 módulos de 12 canais relês + 1 módulo de 8 canais dimerizável",
+    itens: [
+      { descricao: "Fonte", quantidade: 1 },
+      { descricao: "Módulo 12 canais relês", quantidade: 2 },
+      { descricao: "Módulo 8 canais dimerizável", quantidade: 1 },
+    ],
+  },
+  {
+    id: "aut-60",
+    categoria: "Automação",
+    nome: "Automação 60 circuitos",
+    composicao: "1 Fonte + 3 módulos de 12 canais relês + 3 módulos de 8 canais dimerizáveis",
+    itens: [
+      { descricao: "Fonte", quantidade: 1 },
+      { descricao: "Módulo 12 canais relês", quantidade: 3 },
+      { descricao: "Módulo 8 canais dimerizável", quantidade: 3 },
+    ],
+  },
+  {
+    id: "aut-44",
+    categoria: "Automação",
+    nome: "Automação 44 circuitos, 8 ares, 4 motores",
+    composicao: "1 Fonte + 3 RL12 + 1 DIM8 + 1 IR-8 + 1 LX-4",
+    itens: [
+      { descricao: "Fonte", quantidade: 1 },
+      { descricao: "Módulo 12 canais relês (RL12)", quantidade: 3 },
+      { descricao: "Módulo 8 canais dimerizável (DIM8)", quantidade: 1 },
+      { descricao: "Módulo ar condicionado (IR-8)", quantidade: 1 },
+      { descricao: "Módulo de cortina (LX-4)", quantidade: 1 },
+    ],
+  },
+];
+
+/** Serializa os campos comercialmente relevantes de um array de itens para comparação de snapshot. */
+const serializeItens = (arr: Item[]): string =>
+  JSON.stringify(
+    arr.map(it => ({
+      pid:   it.produto_id   ?? null,
+      titulo: it.produto_titulo,
+      sku:   it.produto_sku  ?? null,
+      nf:    it.nome_fantasia ?? null,
+      qty:   it.quantidade,
+      un:    it.unidade,
+      preco: it.preco_unitario,
+      desc:  it.desconto_item,
+      tipo:  it.tipo_item,
+      seg:   it.segmento_id  ?? null,
+      amb:   it.ambiente_id  ?? null,
+      obs:   it.observacao   ?? null,
+    }))
+  );
 
 const blankItem = (ordem: number): Item => ({
   segmento_id: null,
@@ -59,7 +152,51 @@ const blankItem = (ordem: number): Item => ({
 const computeTotal = (it: Item) =>
   Math.max(0, it.quantidade * it.preco_unitario - it.desconto_item);
 
+/** Tipos que entram no somatório e exibem campos de preço. */
+const isPayingType = (tipo: string) => tipo === "venda_normal" || tipo === "mao_de_obra" || tipo === "cabos";
+
 const ADD_NEW = "__add_new__";
+
+/** Autocomplete para segmento — filtra por digitação, sem botão de novo. */
+function SegmentoCombobox({ value, segmentos, onChange, disabled }: {
+  value: string | null;
+  segmentos: any[];
+  onChange: (id: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = segmentos.find((s: any) => s.id === value);
+  const filtered = !query ? segmentos : segmentos.filter((s: any) => s.nome.toLowerCase().includes(query.toLowerCase()));
+  return (
+    <Popover open={disabled ? false : open} onOpenChange={disabled ? undefined : setOpen}>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="outline" role="combobox" disabled={disabled}
+          className="w-full justify-between font-normal h-9 text-sm px-3 disabled:opacity-60 disabled:cursor-not-allowed">
+          <span className="truncate">{selected?.nome || <span className="text-muted-foreground">—</span>}</span>
+          <ChevronsUpDown className="h-3.5 w-3.5 opacity-50 shrink-0 ml-1" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="p-0 w-52" align="start">
+        <div className="p-2 border-b border-border">
+          <input autoFocus placeholder="Buscar segmento..."
+            className="w-full h-8 px-2 text-sm bg-transparent outline-none"
+            value={query} onChange={e => setQuery(e.target.value)} />
+        </div>
+        <div className="max-h-48 overflow-y-auto">
+          {filtered.length === 0 && <div className="px-3 py-3 text-xs text-muted-foreground text-center">Nenhum resultado.</div>}
+          {filtered.map((s: any) => (
+            <button key={s.id} type="button"
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-accent ${s.id === value ? "bg-accent font-medium" : ""}`}
+              onClick={() => { onChange(s.id); setOpen(false); setQuery(""); }}>
+              {s.nome}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string }) {
   const { user, isAdmin } = useAuth();
@@ -71,16 +208,19 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   const [ambientes, setAmbientes] = useState<any[]>([]);
   // produto labels cache for combobox display
   const [produtoLabels, setProdutoLabels] = useState<Record<string, string>>({});
+  // Kits carregados do banco (null = ainda não carregou)
+  const [dbKits, setDbKits] = useState<any[] | null>(null);
 
   const [form, setForm] = useState<any>({
     cliente_id: "",
     nome_projeto: "",
     tipo_projeto: "residencial",
-    status: "rascunho",
+    status: "em_elaboracao",
     observacoes_internas: "",
     observacoes_cliente: "",
     prazo: "",
     garantia: "",
+    condicoes_pagamento: "",
     desconto: 0,
   });
 
@@ -126,10 +266,67 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     }));
   };
 
-  const [segDlg, setSegDlg] = useState<{ open: boolean; itemIdx: number | null }>({ open: false, itemIdx: null });
-  const [segNome, setSegNome] = useState("");
+  // 2.2 — duplicate product dialog
+  const [dupDlg, setDupDlg] = useState<{ open: boolean; idx: number; produto: any } | null>(null);
+
+  // 2.3 — discount cap error
+  const [descontoErr, setDescontoErr] = useState(false);
+  const [descontoModo, setDescontoModo] = useState<"valor" | "pct">("valor");
+
   const [ambDlg, setAmbDlg] = useState<{ open: boolean; itemIdx: number | null }>({ open: false, itemIdx: null });
   const [ambNome, setAmbNome] = useState("");
+
+  // Kit dialog — 2 etapas (aberto) ou 3 etapas (fechado)
+  const [kitDlg, setKitDlg] = useState(false);
+  const [kitStep, setKitStep] = useState<"list" | "configure" | "confirm_closed">("list");
+  const [kitSelecionadoRaw, setKitSelecionadoRaw] = useState<any>(null);
+  const [kitSelecoes, setKitSelecoes] = useState<Record<string, string>>({});
+  const [kitProdsDisponiveis, setKitProdsDisponiveis] = useState<Record<string, any[]>>({});
+  const [kitProdsLoading, setKitProdsLoading] = useState(false);
+  const [kitBuscas, setKitBuscas] = useState<Record<string, string>>({});
+  const [kitFocused, setKitFocused] = useState<Record<string, boolean>>({});
+  const [kitContexto, setKitContexto] = useState<{ segmento_id: string | null; ambiente_id: string | null }>({ segmento_id: null, ambiente_id: null });
+  const [kitClosedProds, setKitClosedProds] = useState<any[]>([]);
+
+  // Dialog: ordem dos grupos no PDF
+  const [pdfOrderDlg, setPdfOrderDlg] = useState(false);
+  const [pdfOrderStep, setPdfOrderStep] = useState<"choice" | "reorder">("choice");
+  const [pdfGrupos, setPdfGrupos] = useState<{ seg: string; amb: string }[]>([]);
+  const [pdfNavId, setPdfNavId] = useState<string>("");
+
+  // Dialog: itens sem produto ao gerar PDF
+  const [emptyItemsDlg, setEmptyItemsDlg] = useState(false);
+
+  // Auto-scroll para item recém-adicionado
+  const pendingScrollIdx = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingScrollIdx.current === null) return;
+    const idx = pendingScrollIdx.current;
+    pendingScrollIdx.current = null;
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-item-idx="${idx}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [itens]);
+
+  // Cabos e mão de obra sempre no final; itens normais ordenados por ordem_exibicao
+  const displayItens = useMemo(() => {
+    const SPECIAL = (tipo: string) => tipo === "mao_de_obra" || tipo === "cabos";
+    return itens
+      .map((it, _idx) => ({ ...it, _idx }))
+      .sort((a, b) => {
+        const aS = SPECIAL(a.tipo_item), bS = SPECIAL(b.tipo_item);
+        if (aS === bS) return a.ordem_exibicao - b.ordem_exibicao;
+        return aS ? 1 : -1;
+      });
+  }, [itens]);
+
+  // Bug #7 — dirty state
+  const loadedRef = useRef(false);
+  const originalItensRef = useRef<string>("");
+  const [isDirty, setIsDirty] = useState(false);
+  const [unsavedDlg, setUnsavedDlg] = useState(false);
+  const [clienteUnsavedDlg, setClienteUnsavedDlg] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -144,6 +341,14 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       setAmbientes(a.data || []);
       setArqs(arq.data || []);
 
+      // Carrega kits do banco; silencia erro caso a migration ainda não tenha rodado
+      const { data: kitData, error: kitErr } = await supabase
+        .from("kits")
+        .select("id, nome, categoria, tipo, kit_itens(id, descricao, produto_codigo, quantidade, ordem, categoria_produto)")
+        .eq("status", true)
+        .order("nome");
+      setDbKits(!kitErr && kitData?.length ? kitData : []);
+
       if (orcamentoId) {
         const { data: orc } = await supabase.from("orcamentos").select("*").eq("id", orcamentoId).single();
         if (orc) {
@@ -156,6 +361,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             observacoes_cliente: orc.observacoes_cliente || "",
             prazo: orc.prazo || "",
             garantia: orc.garantia || "",
+            condicoes_pagamento: orc.condicoes_pagamento || "",
             desconto: Number(orc.desconto) || 0,
           });
         }
@@ -168,16 +374,40 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           valor_total: Number(it.valor_total),
         }));
         setItens(list);
+        originalItensRef.current = serializeItens(list);
         const labels: Record<string, string> = {};
-        list.forEach((it: any) => { if (it.produto_id) labels[it.produto_id] = it.produto_titulo; });
+        list.forEach((it: any) => {
+          if (it.produto_id) labels[it.produto_id] = produtoLabel({
+            titulo: it.produto_titulo,
+            nome_fantasia: it.nome_fantasia,
+            sku: it.produto_sku,
+          });
+        });
         setProdutoLabels(labels);
       }
       setLoading(false);
+      // Permite que React processe todos os setState acima antes de ativar dirty tracking
+      setTimeout(() => { loadedRef.current = true; }, 0);
     })();
   }, [orcamentoId]);
 
+  // Bug #7 — marca dirty quando form ou itens mudam (após carga inicial)
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    setIsDirty(true);
+  }, [form, itens]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Bug #7 — bloqueia fechar aba/recarregar quando há dados não salvos (desktop)
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
   const valorBruto = useMemo(
-    () => itens.filter(i => ["venda_normal", "cliente"].includes(i.tipo_item)).reduce((s, i) => s + computeTotal(i), 0),
+    () => itens.filter(i => isPayingType(i.tipo_item)).reduce((s, i) => s + computeTotal(i), 0),
     [itens]
   );
   const valorFinal = Math.max(0, valorBruto - (Number(form.desconto) || 0));
@@ -191,18 +421,208 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     }));
   };
 
-  const addItem = () => setItens(arr => [...arr, blankItem(arr.length)]);
+  const addItem = () => {
+    // Se já existe uma linha sem produto, rola até ela em vez de criar outra
+    const emptyIdx = itens.findIndex(i => !i.produto_id && !i.produto_titulo.trim() && i.tipo_item !== "mao_de_obra");
+    if (emptyIdx !== -1) {
+      document
+        .querySelector(`[data-item-idx="${emptyIdx}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    pendingScrollIdx.current = 0;
+    setItens(arr => [
+      blankItem(1),
+      ...arr.map(it => ({ ...it, ordem_exibicao: it.ordem_exibicao + 1 })),
+    ]);
+  };
+
+  const addMaoDeObra = () => {
+    pendingScrollIdx.current = itens.length;
+    setItens(arr => [...arr, {
+      ...blankItem(arr.length),
+      tipo_item: "mao_de_obra",
+      produto_titulo: "Mão Obra - Instalação, responsabilidade técnica e acompanhamento",
+    }]);
+  };
+
+  const addCabos = () => {
+    pendingScrollIdx.current = itens.length;
+    setItens(arr => [...arr, {
+      ...blankItem(arr.length),
+      tipo_item: "cabos",
+      produto_titulo: "Conjunto de cabos adicionais p/interligações, conectores e terminais",
+    }]);
+  };
+
   const removeItem = (idx: number) => setItens(arr => arr.filter((_, i) => i !== idx));
 
-  const onPickProduto = (idx: number, p: any) => {
+  const applyProduto = (idx: number, p: any) => {
     updateItem(idx, {
       produto_id: p.id,
       produto_titulo: p.titulo,
       produto_sku: p.sku,
+      nome_fantasia: p.nome_fantasia || null,
       unidade: p.unidade || "un",
       preco_unitario: Number(p.msrp) || 0,
     });
-    setProdutoLabels(prev => ({ ...prev, [p.id]: p.titulo }));
+    setProdutoLabels(prev => ({ ...prev, [p.id]: produtoLabel(p) }));
+  };
+
+  const onPickProduto = (idx: number, p: any) => {
+    const isDup = itens.some((it, i) => i !== idx && it.produto_id === p.id);
+    if (isDup) {
+      setDupDlg({ open: true, idx, produto: p });
+      return;
+    }
+    applyProduto(idx, p);
+  };
+
+  // ── Kit handlers ───────────────────────────────────────────────────────────
+  const openKit = () => { setKitStep("list"); setKitDlg(true); };
+
+  const onSelectKit = async (kit: any) => {
+    setKitSelecionadoRaw(kit);
+
+    // Resolve segmento_id a partir da categoria do kit (match por nome, case-insensitive)
+    const segmentoMatch = segmentos.find(
+      (s: any) => s.nome?.trim().toLowerCase() === (kit.categoria || "").trim().toLowerCase()
+    );
+    setKitContexto({ segmento_id: segmentoMatch?.id ?? null, ambiente_id: null });
+
+    // Kit fechado: busca produtos por SKU e vai para etapa de confirmação
+    if (kit.tipo === "fechado") {
+      setKitProdsLoading(true);
+      const skus = (kit.kit_itens || []).map((it: any) => it.produto_codigo).filter(Boolean) as string[];
+      let prods: any[] = [];
+      if (skus.length > 0) {
+        const { data } = await supabase
+          .from("produtos")
+          .select("id, titulo, nome_fantasia, sku, msrp, unidade")
+          .in("sku", skus)
+          .eq("status", true);
+        prods = data || [];
+      }
+      setKitClosedProds(prods);
+      setKitProdsLoading(false);
+      setKitStep("confirm_closed");
+      return;
+    }
+
+    setKitSelecoes({});
+    setKitBuscas({});
+    setKitFocused({});
+    setKitProdsLoading(true);
+
+    const cats = [...new Set(
+      (kit.kit_itens || []).map((it: any) => it.categoria_produto).filter(Boolean)
+    )] as string[];
+
+    const prodsMap: Record<string, any[]> = {};
+
+    // Uma query por categoria — usa o campo "modelo" (não "categoria") que contém
+    // os tipos de componente: "Subwoofer", "Amplificador", "Caixa Torre", etc.
+    // Categorias que começam com "caixa" usam match parcial (%caixa%) para incluir
+    // "Caixa Torre", "Caixa Embutida", "Caixa Externa", "Caixa Teto" etc. no mesmo slot.
+    await Promise.all(cats.map(async (cat) => {
+      const pattern = cat.toLowerCase().startsWith("caixa") ? "%caixa%" : cat;
+      const { data } = await supabase
+        .from("produtos")
+        .select("id, titulo, nome_fantasia, sku, msrp, unidade, modelo")
+        .filter("modelo", "ilike", pattern)
+        .eq("status", true)
+        .order("titulo");
+      prodsMap[cat] = data || [];
+    }));
+
+    setKitProdsDisponiveis(prodsMap);
+    setKitProdsLoading(false);
+    setKitStep("configure");
+  };
+
+  const confirmKit = () => {
+    const slots = [...(kitSelecionadoRaw?.kit_itens || [])].sort((a: any, b: any) => a.ordem - b.ordem);
+    const allProds = Object.values(kitProdsDisponiveis).flat();
+    const novosItens: Item[] = [];
+    for (const slot of slots) {
+      const prodId = kitSelecoes[slot.id];
+      if (!prodId) continue;
+      const prod = allProds.find((p: any) => p.id === prodId);
+      if (!prod) continue;
+      novosItens.push({
+        segmento_id: kitContexto.segmento_id,
+        ambiente_id: kitContexto.ambiente_id,
+        kit_nome: kitSelecionadoRaw?.nome ?? null,
+        produto_id: prod.id,
+        produto_titulo: prod.titulo,
+        produto_sku: prod.sku || null,
+        nome_fantasia: prod.nome_fantasia || null,
+        quantidade: slot.quantidade,
+        unidade: prod.unidade || "un",
+        preco_unitario: Number(prod.msrp) || 0,
+        desconto_item: 0,
+        valor_total: slot.quantidade * (Number(prod.msrp) || 0),
+        tipo_item: "venda_normal",
+        observacao: "",
+        ordem_exibicao: itens.length + novosItens.length,
+      });
+    }
+    const newLabels: Record<string, string> = {};
+    novosItens.forEach(it => {
+      if (it.produto_id) newLabels[it.produto_id] = produtoLabel({ titulo: it.produto_titulo, nome_fantasia: it.nome_fantasia, sku: it.produto_sku });
+    });
+    setProdutoLabels(prev => ({ ...prev, ...newLabels }));
+    pendingScrollIdx.current = itens.length;
+    setItens(arr => [...arr, ...novosItens]);
+    setKitDlg(false);
+    setKitStep("list");
+    setKitSelecionadoRaw(null);
+    setKitSelecoes({});
+    setKitBuscas({});
+    setKitFocused({});
+    setKitProdsDisponiveis({});
+    setKitContexto({ segmento_id: null, ambiente_id: null });
+    toast.success(`${novosItens.length} item${novosItens.length !== 1 ? "ns" : ""} adicionados do kit "${kitSelecionadoRaw?.nome}"`);
+  };
+
+  const confirmClosedKit = () => {
+    const kitNome = kitSelecionadoRaw?.nome;
+    const slots = [...(kitSelecionadoRaw?.kit_itens || [])].sort((a: any, b: any) => a.ordem - b.ordem);
+    const novosItens: Item[] = [];
+    for (const slot of slots) {
+      const prod = kitClosedProds.find((p: any) => p.sku === slot.produto_codigo);
+      const precoUn = Number(prod?.msrp) || 0;
+      novosItens.push({
+        segmento_id: kitContexto.segmento_id,
+        ambiente_id: kitContexto.ambiente_id,
+        kit_nome: kitNome ?? null,
+        produto_id: prod?.id || null,
+        produto_titulo: prod?.titulo || slot.descricao,
+        produto_sku: slot.produto_codigo || null,
+        nome_fantasia: prod?.nome_fantasia || null,
+        quantidade: slot.quantidade,
+        unidade: prod?.unidade || "un",
+        preco_unitario: precoUn,
+        desconto_item: 0,
+        valor_total: slot.quantidade * precoUn,
+        tipo_item: "venda_normal",
+        observacao: "",
+        ordem_exibicao: itens.length + novosItens.length,
+      });
+    }
+    const newLabels: Record<string, string> = {};
+    novosItens.forEach(it => {
+      if (it.produto_id) newLabels[it.produto_id] = produtoLabel({ titulo: it.produto_titulo, nome_fantasia: it.nome_fantasia, sku: it.produto_sku });
+    });
+    setProdutoLabels(prev => ({ ...prev, ...newLabels }));
+    pendingScrollIdx.current = itens.length;
+    setItens(arr => [...arr, ...novosItens]);
+    setKitDlg(false);
+    setKitStep("list");
+    setKitSelecionadoRaw(null);
+    setKitClosedProds([]);
+    setKitContexto({ segmento_id: null, ambiente_id: null });
+    toast.success(`${novosItens.length} item${novosItens.length !== 1 ? "ns" : ""} adicionados do kit "${kitNome}"`);
   };
 
   const saveCliente = async () => {
@@ -228,33 +648,84 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     toast.success(`Cliente #${data.numero_cliente} cadastrado`);
   };
 
-  const saveSegmento = async () => {
-    if (!segNome.trim()) return toast.error("Informe o nome do segmento.");
-    const { data, error } = await supabase.from("segmentos").insert({ nome: segNome.trim(), ordem: segmentos.length }).select().single();
-    if (error) return toast.error(error.message);
-    setSegmentos(arr => [...arr, data]);
-    if (segDlg.itemIdx !== null) updateItem(segDlg.itemIdx, { segmento_id: data.id });
-    setSegNome("");
-    setSegDlg({ open: false, itemIdx: null });
-    toast.success("Segmento criado");
-  };
-
-  const saveAmbiente = async () => {
+  const saveAmbiente = () => {
     if (!ambNome.trim()) return toast.error("Informe o nome do ambiente.");
-    const { data, error } = await supabase.from("ambientes").insert({ nome: ambNome.trim(), ordem: ambientes.length }).select().single();
-    if (error) return toast.error(error.message);
-    setAmbientes(arr => [...arr, data]);
-    if (ambDlg.itemIdx !== null) updateItem(ambDlg.itemIdx, { ambiente_id: data.id });
+    if (ambDlg.itemIdx !== null) updateItem(ambDlg.itemIdx, { ambiente_id: null, ambiente_nome: ambNome.trim() });
     setAmbNome("");
     setAmbDlg({ open: false, itemIdx: null });
-    toast.success("Ambiente criado");
+    toast.success("Ambiente personalizado definido");
   };
 
-  const save = async (goPdf = false) => {
+  /** Remove itens em branco (sem produto e sem tipo mao_de_obra/cabos), atualiza estado e chama save(true). */
+  const confirmRemoveEmpty = () => {
+    const filtered = itens.filter(it =>
+      it.tipo_item === "mao_de_obra" || it.tipo_item === "cabos" || it.produto_id || it.produto_titulo?.trim()
+    );
+    setItens(filtered);
+    setEmptyItemsDlg(false);
+    save(true, filtered);
+  };
+
+  const extractGruposPdf = (items: Item[]) => {
+    const seen = new Set<string>();
+    const groups: { seg: string; amb: string }[] = [];
+    for (const it of items) {
+      const segNome = (segmentos.find((s: any) => s.id === it.segmento_id)?.nome ?? "GERAL").toUpperCase();
+      const ambNome = (it.ambiente_nome ?? ambientes.find((a: any) => a.id === it.ambiente_id)?.nome ?? "GERAL").toUpperCase();
+      const key = `${segNome}|||${ambNome}`;
+      if (!seen.has(key)) { seen.add(key); groups.push({ seg: segNome, amb: ambNome }); }
+    }
+    return groups;
+  };
+
+  const openPdfFlow = (id: string, items?: Item[]) => {
+    const grupos = extractGruposPdf(items ?? itens);
+    if (grupos.length <= 1) {
+      nav({ to: "/orcamentos/$id/pdf", params: { id }, search: {} });
+      return;
+    }
+    setPdfNavId(id);
+    setPdfGrupos(grupos);
+    setPdfOrderStep("choice");
+    setPdfOrderDlg(true);
+  };
+
+  const navigateToPdf = (grupos: { seg: string; amb: string }[]) => {
+    const search = grupos.length
+      ? { groupOrder: JSON.stringify(grupos.map(g => `${g.seg}|||${g.amb}`)) }
+      : {};
+    nav({ to: "/orcamentos/$id/pdf", params: { id: pdfNavId }, search });
+    setPdfOrderDlg(false);
+  };
+
+  const movePdfGrupo = (i: number, dir: -1 | 1) => {
+    const arr = [...pdfGrupos];
+    const j = i + dir;
+    if (j < 0 || j >= arr.length) return;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    setPdfGrupos(arr);
+  };
+
+  const save = async (goPdf = false, overrideItens?: Item[]) => {
     const errs: Record<string, boolean> = {};
     if (!form.cliente_id) errs.cliente_id = true;
     setErrors(errs);
     if (Object.keys(errs).length) return toast.error("Preencha os campos destacados em vermelho.");
+
+    // Ao ir para PDF, verifica se há itens sem produto selecionado
+    if (goPdf && !overrideItens) {
+      const empties = itens.filter(
+        it => it.tipo_item !== "mao_de_obra" && it.tipo_item !== "cabos" && !it.produto_id && !it.produto_titulo?.trim()
+      );
+      if (empties.length > 0) { setEmptyItemsDlg(true); return; }
+    }
+
+    // 2.3 — block save if discount exceeds 30 %
+    const maxDesc = valorBruto * 0.30;
+    if (Number(form.desconto) > maxDesc) {
+      setDescontoErr(true);
+      return toast.error("Desconto não autorizado — máximo 30% do valor bruto.");
+    }
     setSaving(true);
 
     const payload = {
@@ -265,24 +736,54 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       vendedor_id: user!.id,
     };
 
+    const itensToSave = overrideItens ?? itens;
     let id = orcamentoId;
     let numero: number | undefined;
+    let novaVersao: string | null = null;
+
     if (isNew) {
       const { data, error } = await supabase.from("orcamentos").insert(payload).select().single();
       if (error) { setSaving(false); return toast.error(error.message); }
       id = data.id;
       numero = data.numero_orcamento;
     } else {
-      const { error } = await supabase.from("orcamentos").update(payload).eq("id", orcamentoId!);
-      if (error) { setSaving(false); return toast.error(error.message); }
-      await supabase.from("orcamento_itens").delete().eq("orcamento_id", orcamentoId!);
+      // Versionamento: nunca sobrescreve — cria nova versão com a próxima letra (A, B, C…)
+      const { data: currOrc } = await supabase
+        .from("orcamentos")
+        .select("numero_orcamento")
+        .eq("id", orcamentoId!)
+        .single();
+      if (!currOrc) { setSaving(false); return toast.error("Orçamento não encontrado."); }
+      numero = currOrc.numero_orcamento;
+
+      // Determina a próxima letra disponível para esse número
+      const { data: todasVersoes } = await supabase
+        .from("orcamentos")
+        .select("versao")
+        .eq("numero_orcamento", numero!);
+      const LETRAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      const usadas = (todasVersoes || [])
+        .map((v: any) => v.versao)
+        .filter((v: any): v is string => typeof v === "string" && v.length === 1);
+      const maxIdx = usadas.length === 0 ? -1 : Math.max(...usadas.map(l => LETRAS.indexOf(l)));
+      novaVersao = LETRAS[Math.min(maxIdx + 1, 25)] ?? "A";
+
+      const { data: novoOrc, error: insErr } = await supabase
+        .from("orcamentos")
+        .insert({ ...payload, numero_orcamento: numero, versao: novaVersao })
+        .select()
+        .single();
+      if (insErr) { setSaving(false); return toast.error(insErr.message); }
+      id = novoOrc.id;
     }
 
-    if (itens.length) {
-      const insertable = itens.map((it, i) => ({
+    if (itensToSave.length) {
+      const insertable = itensToSave.map((it, i) => ({
         orcamento_id: id!,
         segmento_id: it.segmento_id,
         ambiente_id: it.ambiente_id,
+        ambiente_nome: it.ambiente_nome ?? null,
+        kit_nome: it.kit_nome ?? null,
         produto_id: it.produto_id,
         produto_titulo: it.produto_titulo || "Item",
         produto_sku: it.produto_sku,
@@ -300,19 +801,24 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     }
 
     setSaving(false);
-    toast.success(numero ? `Orçamento #${numero} salvo` : "Orçamento salvo");
-    if (goPdf) nav({ to: "/orcamentos/$id/pdf", params: { id: id! }, search: { download: "1" } });
-    else if (isNew) nav({ to: "/orcamentos/$id", params: { id: id! } });
+    setIsDirty(false);
+    const numDisplay = numero != null ? fmtOrcNumV(numero, novaVersao) : "";
+    toast.success(numDisplay ? `Orçamento ${numDisplay} salvo` : "Orçamento salvo");
+    if (goPdf) openPdfFlow(id!, overrideItens);
+    else nav({ to: "/orcamentos/$id", params: { id: id! } });
   };
 
   if (loading) return <div className="p-8 text-muted-foreground">Carregando...</div>;
 
   return (
-    <div className="p-4 md:p-8 max-w-[1400px] mx-auto">
+    <div className="p-4 md:p-8 pb-24 max-w-[1400px] mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <div>
-          <Button asChild variant="ghost" size="sm" className="mb-2 -ml-3">
-            <Link to="/orcamentos"><ArrowLeft className="h-4 w-4 mr-1" /> Voltar</Link>
+          <Button
+            variant="ghost" size="sm" className="mb-2 -ml-3"
+            onClick={() => isDirty ? setUnsavedDlg(true) : nav({ to: "/orcamentos" })}
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
           </Button>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
             {isNew ? "Novo orçamento" : "Editar orçamento"}
@@ -324,12 +830,10 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             Salvar
           </Button>
           {!isNew && orcamentoId && (
-            <Button asChild variant="outline" className="flex-1 sm:flex-initial">
-              <Link to="/orcamentos/$id/pdf" params={{ id: orcamentoId }}>
-                <FileText className="h-4 w-4 mr-2" />
-                <span className="hidden sm:inline">Baixar PDF</span>
-                <span className="sm:hidden">PDF</span>
-              </Link>
+            <Button variant="outline" className="flex-1 sm:flex-initial" onClick={() => openPdfFlow(orcamentoId)}>
+              <FileText className="h-4 w-4 mr-2" />
+              <span className="hidden sm:inline">Baixar PDF</span>
+              <span className="sm:hidden">PDF</span>
             </Button>
           )}
           <Button className="flex-1 sm:flex-initial" onClick={() => save(true)} disabled={saving}>
@@ -401,9 +905,13 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             <Label>Garantia</Label>
             <Input value={form.garantia} onChange={(e) => setForm({ ...form, garantia: e.target.value })} placeholder="Ex.: 12 meses contra defeito de fabricação" />
           </div>
+          <div className="md:col-span-2">
+            <Label>Condições de pagamento</Label>
+            <Input value={form.condicoes_pagamento} onChange={(e) => setForm({ ...form, condicoes_pagamento: e.target.value })} placeholder="Ex.: 50% na aprovação, 50% na entrega" />
+          </div>
           <div className="md:col-span-3 grid md:grid-cols-2 gap-4">
             <div>
-              <Label>Observações ao cliente (PDF)</Label>
+              <Label>Observações de Projeto</Label>
               <Textarea rows={3} value={form.observacoes_cliente} onChange={(e) => setForm({ ...form, observacoes_cliente: e.target.value })} />
             </div>
             <div>
@@ -415,9 +923,14 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       </Card>
 
       <Card className="p-4 md:p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
           <h2 className="text-lg font-semibold">Itens do orçamento</h2>
-          <Button size="sm" onClick={addItem}><Plus className="h-4 w-4 mr-2" /> Adicionar item</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" className="flex-1 sm:flex-initial" onClick={openKit}><Package className="h-4 w-4 mr-2" /> Adicionar kit</Button>
+            <Button size="sm" className="flex-1 sm:flex-initial" onClick={addItem}><Plus className="h-4 w-4 mr-2" /> Adicionar item</Button>
+            <Button size="sm" variant="outline" className="flex-1 sm:flex-initial" onClick={addMaoDeObra}><Wrench className="h-4 w-4 mr-2" /> Mão de obra</Button>
+            <Button size="sm" variant="outline" className="flex-1 sm:flex-initial" onClick={addCabos}><Cable className="h-4 w-4 mr-2" /> Cabos</Button>
+          </div>
         </div>
 
         {/* ── Mobile: cards empilhados ── */}
@@ -425,143 +938,241 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           {itens.length === 0 && (
             <p className="text-center text-muted-foreground py-6 text-sm">Nenhum item ainda. Clique em "Adicionar item".</p>
           )}
-          {itens.map((it, idx) => (
-            <div key={idx} className="border border-border rounded-lg p-3 space-y-2 bg-card">
+          {displayItens.map((it) => { const idx = it._idx; return (it.tipo_item === "mao_de_obra" || it.tipo_item === "cabos") ? (
+            /* ── Card mão de obra / cabos (mobile) ── */
+            <div key={idx} data-item-idx={idx} className="border border-primary/30 rounded-lg p-3 space-y-2 bg-card">
               <div className="flex justify-between items-center">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Item {idx + 1}</span>
+                <div className="flex items-center gap-2">
+                  {it.tipo_item === "mao_de_obra"
+                    ? <Wrench className="h-3.5 w-3.5 text-primary" />
+                    : <Cable className="h-3.5 w-3.5 text-primary" />}
+                  <span className="text-xs font-semibold text-primary uppercase tracking-wide">
+                    {it.tipo_item === "mao_de_obra" ? "Mão de obra" : "Cabos"}
+                  </span>
+                  <Input type="number" min="1" className="h-6 w-12 text-center text-xs p-1" value={it.ordem_exibicao} onChange={(e) => updateItem(idx, { ordem_exibicao: Math.max(1, Number(e.target.value) || 1) })} />
+                </div>
                 <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => removeItem(idx)}>
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Segmento</Label>
-                <Select value={it.segmento_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setSegDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { segmento_id: v }); }}>
-                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} disabled={!!it.produto_id} />
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Ambiente</Label>
+                <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v, ambiente_nome: null }); }}>
+                  <SelectTrigger><SelectValue placeholder={it.ambiente_nome || "—"} /></SelectTrigger>
                   <SelectContent>
-                    {segmentos.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum segmento. Peça ao admin.</div>}
-                    {segmentos.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
-                    {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo segmento</SelectItem>}
+                    {ambientes.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
+                    <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
+                <Label className="text-xs mb-1 block">Descrição</Label>
+                <Input
+                  className="h-9"
+                  placeholder={it.tipo_item === "mao_de_obra" ? "Ex.: Mão de obra - Automação" : "Ex.: Cabos e infraestrutura"}
+                  value={it.produto_titulo}
+                  onChange={(e) => updateItem(idx, { produto_titulo: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Quantidade</Label>
+                <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Valor</Label>
+                <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+              </div>
+              <div className="flex items-center justify-between pt-1 border-t border-border">
+                <Label className="text-xs text-muted-foreground">Total</Label>
+                <p className="font-semibold text-sm">{brl(it.valor_total)}</p>
+              </div>
+            </div>
+          ) : (
+            /* ── Card produto normal (mobile) ── */
+            <div key={idx} data-item-idx={idx} className="border border-border rounded-lg p-3 space-y-2 bg-card">
+              {it.kit_nome && (
+                <div className="flex items-center gap-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded w-fit">
+                  <Package className="h-2.5 w-2.5 shrink-0" />{it.kit_nome}
+                </div>
+              )}
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ord.</span>
+                  <Input type="number" min="1" className="h-6 w-12 text-center text-xs p-1" value={it.ordem_exibicao} onChange={(e) => updateItem(idx, { ordem_exibicao: Math.max(1, Number(e.target.value) || 1) })} />
+                </div>
+                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => removeItem(idx)}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <div>
+                <Label className="text-xs mb-1 block">Segmento</Label>
+                <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} disabled={!!it.produto_id} />
+              </div>
+              <div>
                 <Label className="text-xs mb-1 block">Ambiente</Label>
-                <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v }); }}>
-                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v, ambiente_nome: null }); }}>
+                  <SelectTrigger><SelectValue placeholder={it.ambiente_nome || "—"} /></SelectTrigger>
                   <SelectContent>
                     {ambientes.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum ambiente. Peça ao admin.</div>}
                     {ambientes.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
-                    {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>}
+                    <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Produto</Label>
-                <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} onSelect={(p) => onPickProduto(idx, p)} />
+                <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
                 <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs mb-1 block">Tipo</Label>
-                  <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(TIPO_ITEM_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs mb-1 block">Quantidade</Label>
-                  <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
-                </div>
+              <div>
+                <Label className="text-xs mb-1 block">Tipo</Label>
+                <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(TIPO_ITEM_LABELS).filter(([k]) => k !== "mao_de_obra").map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <Label className="text-xs mb-1 block">Preço un.</Label>
-                  <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
-                </div>
-                <div>
-                  <Label className="text-xs mb-1 block">Desconto</Label>
-                  <CurrencyInput value={it.desconto_item} onChange={(v) => updateItem(idx, { desconto_item: v })} />
-                </div>
-                <div>
-                  <Label className="text-xs mb-1 block">Total</Label>
-                  <p className="font-semibold text-right pt-2 text-sm">{brl(it.valor_total)}</p>
-                </div>
+              <div>
+                <Label className="text-xs mb-1 block">Quantidade</Label>
+                <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
               </div>
+              {isPayingType(it.tipo_item) && (
+                <>
+                  <div>
+                    <Label className="text-xs mb-1 block">Preço un.</Label>
+                    <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-border">
+                    <Label className="text-xs text-muted-foreground">Total</Label>
+                    <p className="font-semibold text-sm">{brl(it.valor_total)}</p>
+                  </div>
+                </>
+              )}
             </div>
-          ))}
+          )})}
         </div>
 
         {/* ── Desktop: tabela horizontal ── */}
         <div className="hidden md:block overflow-x-auto">
-          <Table className="min-w-[1100px]">
+          <Table className="min-w-[1100px] table-fixed">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[46px] text-center">Ord.</TableHead>
                 <TableHead className="w-[160px]">Segmento</TableHead>
                 <TableHead className="w-[160px]">Ambiente</TableHead>
                 <TableHead>Produto</TableHead>
                 <TableHead className="w-[130px]">Tipo</TableHead>
-                <TableHead className="w-[80px]">Qtd</TableHead>
-                <TableHead className="w-[120px]">Preço un.</TableHead>
-                <TableHead className="w-[110px]">Desc.</TableHead>
-                <TableHead className="w-[120px] text-right">Total</TableHead>
+                <TableHead className="w-[70px]">Qtd</TableHead>
+                <TableHead className="w-[160px]">Preço un.</TableHead>
+                <TableHead className="w-[160px] text-right">Total</TableHead>
                 <TableHead className="w-[40px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {itens.length === 0 && (
-                <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">Nenhum item ainda. Clique em "Adicionar item".</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">Nenhum item ainda. Clique em "Adicionar item".</TableCell></TableRow>
               )}
-              {itens.map((it, idx) => (
-                <TableRow key={idx}>
+              {displayItens.map((it) => { const idx = it._idx; return (it.tipo_item === "mao_de_obra" || it.tipo_item === "cabos") ? (
+                /* ── Linha mão de obra / cabos (desktop) — com segmento e ambiente ── */
+                <TableRow key={idx} data-item-idx={idx} className="bg-primary/5">
+                  <TableCell className="w-[46px]">
+                    <Input type="number" min="1" className="h-8 w-10 text-center text-xs p-1" value={it.ordem_exibicao} onChange={(e) => updateItem(idx, { ordem_exibicao: Math.max(1, Number(e.target.value) || 1) })} />
+                  </TableCell>
                   <TableCell>
-                    <Select value={it.segmento_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setSegDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { segmento_id: v }); }}>
-                      <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                    <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} />
+                  </TableCell>
+                  <TableCell>
+                    <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v, ambiente_nome: null }); }}>
+                      <SelectTrigger><SelectValue placeholder={it.ambiente_nome || "—"} /></SelectTrigger>
                       <SelectContent>
-                        {segmentos.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum segmento. Peça ao admin.</div>}
-                        {segmentos.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
-                        {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo segmento</SelectItem>}
+                        {ambientes.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
+                        <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>
                       </SelectContent>
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v }); }}>
-                      <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                    <Input
+                      className="h-9 text-sm"
+                      placeholder={it.tipo_item === "mao_de_obra" ? "Descrição da mão de obra..." : "Descrição dos cabos..."}
+                      value={it.produto_titulo}
+                      onChange={(e) => updateItem(idx, { produto_titulo: e.target.value })}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-xs text-muted-foreground italic">
+                      {it.tipo_item === "mao_de_obra" ? "Mão de obra" : "Cabos"}
+                    </span>
+                  </TableCell>
+                  <TableCell className="w-[70px]">
+                    <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
+                  </TableCell>
+                  <TableCell className="w-[160px]">
+                    <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+                  </TableCell>
+                  <TableCell className="w-[160px] text-right font-medium">{brl(it.valor_total)}</TableCell>
+                  <TableCell>
+                    <Button size="icon" variant="ghost" onClick={() => removeItem(idx)}><Trash2 className="h-4 w-4" /></Button>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                /* ── Linha produto normal (desktop) ── */
+                <TableRow key={idx} data-item-idx={idx}>
+                  <TableCell className="w-[46px]">
+                    <Input type="number" min="1" className="h-8 w-10 text-center text-xs p-1" value={it.ordem_exibicao} onChange={(e) => updateItem(idx, { ordem_exibicao: Math.max(1, Number(e.target.value) || 1) })} />
+                  </TableCell>
+                  <TableCell>
+                    <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} disabled={!!it.produto_id} />
+                  </TableCell>
+                  <TableCell>
+                    <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v, ambiente_nome: null }); }}>
+                      <SelectTrigger><SelectValue placeholder={it.ambiente_nome || "—"} /></SelectTrigger>
                       <SelectContent>
                         {ambientes.length === 0 && !isAdmin && <div className="px-2 py-2 text-xs text-muted-foreground">Nenhum ambiente. Peça ao admin.</div>}
                         {ambientes.map(a => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
-                        {isAdmin && <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>}
+                        <SelectItem value={ADD_NEW} className="text-primary font-medium">+ Novo ambiente</SelectItem>
                       </SelectContent>
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} onSelect={(p) => onPickProduto(idx, p)} />
+                    <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
+                    {it.kit_nome && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                        <Package className="h-2.5 w-2.5 shrink-0" />{it.kit_nome}
+                      </span>
+                    )}
                     <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
                   </TableCell>
                   <TableCell>
                     <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {Object.entries(TIPO_ITEM_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                        {Object.entries(TIPO_ITEM_LABELS).filter(([k]) => k !== "mao_de_obra").map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="w-[70px]">
                     <Input type="number" step="1" min="1" value={it.quantidade} onChange={(e) => updateItem(idx, { quantidade: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
                   </TableCell>
-                  <TableCell>
-                    <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+                  <TableCell className="w-[160px]">
+                    {isPayingType(it.tipo_item)
+                      ? <CurrencyInput value={it.preco_unitario} onChange={(v) => updateItem(idx, { preco_unitario: v })} />
+                      : <span className="text-muted-foreground text-sm">—</span>}
                   </TableCell>
-                  <TableCell>
-                    <CurrencyInput value={it.desconto_item} onChange={(v) => updateItem(idx, { desconto_item: v })} />
+                  <TableCell className="w-[160px] text-right font-medium">
+                    {isPayingType(it.tipo_item)
+                      ? brl(it.valor_total)
+                      : <span className="text-muted-foreground text-sm">—</span>}
                   </TableCell>
-                  <TableCell className="text-right font-medium">{brl(it.valor_total)}</TableCell>
                   <TableCell>
                     <Button size="icon" variant="ghost" onClick={() => removeItem(idx)}><Trash2 className="h-4 w-4" /></Button>
                   </TableCell>
                 </TableRow>
-              ))}
+              )})}
             </TableBody>
           </Table>
         </div>
@@ -576,9 +1187,44 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             </div>
             <div className="flex justify-between items-center gap-3">
               <span className="text-sm text-muted-foreground">Desconto geral</span>
-              <CurrencyInput className="w-32 text-right" value={Number(form.desconto) || 0}
-                onChange={(v) => setForm({ ...form, desconto: v })} />
+              <div className="flex items-center gap-1">
+                {/* Toggle R$ / % */}
+                <Button type="button" size="sm" variant={descontoModo === "valor" ? "default" : "outline"}
+                  className="h-8 w-8 p-0 text-xs" onClick={() => setDescontoModo("valor")}>R$</Button>
+                <Button type="button" size="sm" variant={descontoModo === "pct" ? "default" : "outline"}
+                  className="h-8 w-8 p-0 text-xs" onClick={() => setDescontoModo("pct")}>%</Button>
+                {descontoModo === "pct" ? (
+                  <div className="relative w-24">
+                    <input
+                      type="number" min="0" max="100" step="0.1"
+                      className={`h-9 w-full rounded-md border bg-background px-3 pr-6 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring${descontoErr ? " border-destructive focus:ring-destructive" : " border-input"}`}
+                      value={valorBruto > 0 ? Number(((Number(form.desconto) / valorBruto) * 100).toFixed(2)) : 0}
+                      onChange={(e) => {
+                        const pct = Math.min(100, Math.max(0, parseFloat(e.target.value) || 0));
+                        const v = Math.round(valorBruto * pct / 100 * 100) / 100;
+                        setForm({ ...form, desconto: v });
+                        setDescontoErr(pct > 30);
+                      }}
+                    />
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">%</span>
+                  </div>
+                ) : (
+                  <CurrencyInput
+                    className={`w-32 text-right${descontoErr ? " border-destructive focus-visible:ring-destructive" : ""}`}
+                    value={Number(form.desconto) || 0}
+                    onChange={(v) => {
+                      setForm({ ...form, desconto: v });
+                      setDescontoErr(v > valorBruto * 0.30);
+                    }}
+                  />
+                )}
+              </div>
             </div>
+            {descontoErr && (
+              <p className="text-xs text-destructive text-right font-semibold">
+                Desconto não autorizado — máximo 30%
+              </p>
+            )}
             <div className="flex justify-between text-lg font-bold pt-2 border-t border-border">
               <span>Valor final</span>
               <span className="text-primary">{brl(valorFinal)}</span>
@@ -588,7 +1234,13 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       </Card>
 
       {/* Dialog: novo cliente */}
-      <Dialog open={clienteDlg} onOpenChange={setClienteDlg}>
+      <Dialog open={clienteDlg} onOpenChange={(o) => {
+        if (!o) {
+          const hasData = Object.values(clienteForm).some(v => typeof v === "string" && v.trim() !== "");
+          if (hasData) { setClienteUnsavedDlg(true); return; }
+        }
+        setClienteDlg(o);
+      }}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Novo cliente</DialogTitle>
@@ -602,7 +1254,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             </div>
 
             {/* CPF/CNPJ + Telefone */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label>CPF / CNPJ</Label>
                 <Input value={clienteForm.cpf_cnpj}
@@ -612,15 +1264,15 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
               <div>
                 <Label>Telefone</Label>
-                <Input value={clienteForm.telefone} onChange={(e) => setClienteForm({ ...clienteForm, telefone: e.target.value })} />
+                <Input value={clienteForm.telefone} placeholder="(15) 3224-2316" maxLength={15} onChange={(e) => setClienteForm({ ...clienteForm, telefone: maskPhone(e.target.value) })} />
               </div>
             </div>
 
             {/* Celular + E-mail */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label>Celular</Label>
-                <Input value={clienteForm.celular} onChange={(e) => setClienteForm({ ...clienteForm, celular: e.target.value })} />
+                <Input value={clienteForm.celular} placeholder="(15) 99999-9999" maxLength={15} onChange={(e) => setClienteForm({ ...clienteForm, celular: maskPhone(e.target.value) })} />
               </div>
               <div>
                 <Label>E-mail</Label>
@@ -647,7 +1299,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             </div>
 
             {/* Bairro + CEP */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label>Bairro</Label>
                 <Input value={clienteForm.bairro} onChange={(e) => setClienteForm({ ...clienteForm, bairro: e.target.value })} />
@@ -670,7 +1322,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             </div>
 
             {/* Cidade + Estado */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label>Cidade</Label>
                 <Input value={clienteForm.cidade} onChange={(e) => setClienteForm({ ...clienteForm, cidade: e.target.value })} />
@@ -700,7 +1352,10 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setClienteDlg(false)}>Cancelar</Button>
+            <Button variant="outline" onClick={() => {
+              const hasData = Object.values(clienteForm).some(v => typeof v === "string" && v.trim() !== "");
+              if (hasData) { setClienteUnsavedDlg(true); } else { setClienteDlg(false); }
+            }}>Cancelar</Button>
             <Button onClick={saveCliente} disabled={savingCliente}>
               {savingCliente && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Cadastrar e selecionar
@@ -709,20 +1364,429 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
         </DialogContent>
       </Dialog>
 
-      {/* Dialog: novo segmento */}
-      <Dialog open={segDlg.open} onOpenChange={(o) => setSegDlg({ open: o, itemIdx: o ? segDlg.itemIdx : null })}>
+      {/* ── Rodapé fixo ─────────────────────────────────────────────────── */}
+      <div
+        className="fixed bottom-0 left-0 right-0 md:left-64 z-20 bg-background border-t border-border px-4 pt-3 flex justify-end gap-2 flex-wrap"
+        style={{ paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))" }}
+      >
+        <Button variant="outline" onClick={() => save(false)} disabled={saving}>
+          {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+          Salvar
+        </Button>
+        {!isNew && orcamentoId && (
+          <Button variant="outline" onClick={() => openPdfFlow(orcamentoId)}>
+            <FileText className="h-4 w-4 mr-2" />
+            <span className="hidden sm:inline">Baixar PDF</span>
+            <span className="sm:hidden">PDF</span>
+          </Button>
+        )}
+        <Button onClick={() => save(true)} disabled={saving}>
+          {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
+          <span className="hidden sm:inline">Salvar e abrir PDF</span>
+          <span className="sm:hidden">Salvar+PDF</span>
+        </Button>
+      </div>
+
+      {/* Dialog: ordem dos grupos no PDF */}
+      <Dialog open={pdfOrderDlg} onOpenChange={(o) => { if (!o) setPdfOrderDlg(false); }}>
+        <DialogContent className="max-w-md p-0 flex flex-col gap-0">
+          {pdfOrderStep === "choice" && (
+            <>
+              <DialogHeader className="px-5 pt-5 pb-3 border-b border-border">
+                <DialogTitle>Gerar PDF</DialogTitle>
+                <DialogDescription>Como deseja ordenar os grupos de itens no PDF?</DialogDescription>
+              </DialogHeader>
+              <div className="px-5 py-5 flex flex-col gap-3">
+                <Button
+                  size="lg"
+                  className="w-full justify-start h-auto py-3 px-4"
+                  onClick={() => navigateToPdf([])}
+                >
+                  <FileText className="h-5 w-5 mr-3 shrink-0" />
+                  <div className="text-left">
+                    <p className="font-semibold">Usar ordem padrão</p>
+                    <p className="text-xs font-normal opacity-75">Segmento → Ambiente, conforme cadastro</p>
+                  </div>
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="w-full justify-start h-auto py-3 px-4"
+                  onClick={() => setPdfOrderStep("reorder")}
+                >
+                  <ChevronsUpDown className="h-5 w-5 mr-3 shrink-0" />
+                  <div className="text-left">
+                    <p className="font-semibold">Personalizar ordem</p>
+                    <p className="text-xs font-normal text-muted-foreground">Arraste ou use as setas para reordenar os blocos</p>
+                  </div>
+                </Button>
+              </div>
+              <DialogFooter className="px-5 pb-4">
+                <Button variant="ghost" size="sm" onClick={() => setPdfOrderDlg(false)}>Cancelar</Button>
+              </DialogFooter>
+            </>
+          )}
+          {pdfOrderStep === "reorder" && (
+            <>
+              <DialogHeader className="px-5 pt-5 pb-3 border-b border-border">
+                <Button type="button" variant="ghost" size="sm" className="-ml-1 mb-1 h-7 px-2 text-xs" onClick={() => setPdfOrderStep("choice")}>
+                  ← Voltar
+                </Button>
+                <DialogTitle>Personalizar ordem</DialogTitle>
+                <DialogDescription>Use as setas para definir a ordem dos blocos no PDF.</DialogDescription>
+              </DialogHeader>
+              <div className="px-5 py-4 space-y-2 overflow-y-auto max-h-72">
+                {pdfGrupos.map((g, i) => (
+                  <div key={`${g.seg}|||${g.amb}`} className="flex items-center gap-2 p-2.5 border border-border rounded-lg bg-card">
+                    <span className="flex-1 text-sm min-w-0">
+                      <span className="font-medium">{g.seg}</span>
+                      <span className="text-muted-foreground"> — {g.amb}</span>
+                    </span>
+                    <div className="flex flex-col gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={i === 0}
+                        onClick={() => movePdfGrupo(i, -1)}
+                        className="rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <ChevronUp className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={i === pdfGrupos.length - 1}
+                        onClick={() => movePdfGrupo(i, 1)}
+                        className="rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <DialogFooter className="px-5 py-3 border-t border-border">
+                <Button variant="outline" onClick={() => setPdfOrderDlg(false)}>Cancelar</Button>
+                <Button onClick={() => navigateToPdf(pdfGrupos)}>
+                  <FileText className="h-4 w-4 mr-2" />
+                  Gerar PDF
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: selecionar e configurar kit — 2 etapas */}
+      <Dialog open={kitDlg} onOpenChange={(o) => { if (!o) { setKitDlg(false); setKitStep("list"); setKitSelecionadoRaw(null); setKitSelecoes({}); setKitBuscas({}); setKitFocused({}); setKitProdsDisponiveis({}); setKitClosedProds([]); setKitContexto({ segmento_id: null, ambiente_id: null }); } }}>
+        <DialogContent className="max-w-lg p-0 flex flex-col gap-0 h-[100dvh] max-h-[100dvh] sm:h-auto sm:max-h-[85vh] rounded-none sm:rounded-lg">
+
+          {/* ── Etapa 1: lista de kits ── */}
+          {kitStep === "list" && (() => {
+            const kitsToShow = dbKits || [];
+            const cats = [...new Set(kitsToShow.map((k: any) => k.categoria || "Kits"))].filter(Boolean);
+            return (
+              <>
+                <DialogHeader className="px-5 pt-5 pb-3 border-b border-border shrink-0">
+                  <DialogTitle>Selecionar kit</DialogTitle>
+                  <DialogDescription>Clique no kit para configurar os produtos de cada slot.</DialogDescription>
+                </DialogHeader>
+                <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5">
+                  {cats.map(cat => (
+                    <div key={cat}>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">{cat}</p>
+                      <div className="space-y-2">
+                        {kitsToShow.filter((k: any) => (k.categoria || "Kits") === cat).map((kit: any) => {
+                          const composicao = [...(kit.kit_itens || [])].sort((a: any, b: any) => a.ordem - b.ordem).map((it: any) => `${it.quantidade}x ${it.descricao}`).join(" + ");
+                          return (
+                            <button key={kit.id} type="button"
+                              className="w-full text-left border border-border rounded-lg p-3 hover:bg-accent transition-colors"
+                              onClick={() => onSelectKit(kit)}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-sm">{kit.nome}</span>
+                                {kit.tipo === "fechado" && (
+                                  <span className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground">🔒</span>
+                                )}
+                              </div>
+                              {composicao && <div className="text-xs text-muted-foreground mt-0.5">{composicao}</div>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  {kitsToShow.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">Nenhum kit disponível. Cadastre kits na tela de Kits.</p>
+                  )}
+                </div>
+                <DialogFooter className="px-5 py-3 border-t border-border shrink-0">
+                  <Button variant="outline" className="w-full sm:w-auto" onClick={() => setKitDlg(false)}>Cancelar</Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
+
+          {/* ── Etapa 2b: kit fechado — confirmar itens fixos ── */}
+          {kitStep === "confirm_closed" && (() => {
+            const slots = [...(kitSelecionadoRaw?.kit_itens || [])].sort((a: any, b: any) => a.ordem - b.ordem);
+            const totalKit = slots.reduce((sum: number, slot: any) => {
+              const prod = kitClosedProds.find((p: any) => p.sku === slot.produto_codigo);
+              return sum + slot.quantidade * (Number(prod?.msrp) || 0);
+            }, 0);
+            return (
+              <>
+                <DialogHeader className="px-4 pt-3 pb-3 border-b border-border shrink-0 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <Button type="button" variant="ghost" size="sm" className="-ml-1 h-7 px-2 text-xs"
+                      onClick={() => { setKitStep("list"); setKitSelecionadoRaw(null); setKitClosedProds([]); }}>
+                      ← Voltar
+                    </Button>
+                    <DialogTitle className="flex-1 text-base">🔒 {kitSelecionadoRaw?.nome}</DialogTitle>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <Button size="sm" variant="outline" onClick={() => setKitDlg(false)}>Cancelar</Button>
+                    <Button size="sm" onClick={confirmClosedKit} disabled={kitProdsLoading}>
+                      Adicionar ao orçamento
+                    </Button>
+                  </div>
+                </DialogHeader>
+                <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3">
+                  <div className="border border-border rounded-lg p-3 space-y-2 bg-muted/20">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Destino dos itens</p>
+                    <div>
+                      <Label className="text-xs mb-1 block">Ambiente</Label>
+                      <Select value={kitContexto.ambiente_id || ""} onValueChange={(v) => setKitContexto(prev => ({ ...prev, ambiente_id: v || null }))}>
+                        <SelectTrigger className="h-9"><SelectValue placeholder="—" /></SelectTrigger>
+                        <SelectContent>
+                          {ambientes.map((a: any) => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {kitProdsLoading ? (
+                    <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Carregando produtos...
+                    </div>
+                  ) : (
+                    <>
+                      {slots.map((slot: any) => {
+                        const prod = kitClosedProds.find((p: any) => p.sku === slot.produto_codigo);
+                        const precoUn = Number(prod?.msrp) || 0;
+                        const total = slot.quantidade * precoUn;
+                        return (
+                          <div key={slot.id} className="border border-border rounded-lg p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium text-sm leading-tight">{prod?.nome_fantasia || prod?.titulo || slot.descricao}</p>
+                                {slot.produto_codigo && <p className="text-xs text-muted-foreground mt-0.5">{slot.produto_codigo}</p>}
+                              </div>
+                              <span className="text-xs bg-muted px-2 py-0.5 rounded shrink-0">×{slot.quantidade}</span>
+                            </div>
+                            {precoUn > 0 ? (
+                              <div className="flex justify-between items-center mt-2 pt-2 border-t border-border/50">
+                                <span className="text-xs text-muted-foreground">{brl(precoUn)} × {slot.quantidade}</span>
+                                <span className="text-sm font-semibold">{brl(total)}</span>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-muted-foreground mt-1 italic">Sem preço cadastrado — será R$ 0,00</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {totalKit > 0 && (
+                        <div className="flex justify-between items-center px-1 pt-1 border-t border-border">
+                          <span className="text-sm font-semibold text-muted-foreground">Total do kit</span>
+                          <span className="text-base font-bold">{brl(totalKit)}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </>
+            );
+          })()}
+
+          {/* ── Etapa 2: configurar produtos por slot ── */}
+          {kitStep === "configure" && (() => {
+            const slots = [...(kitSelecionadoRaw?.kit_itens || [])].sort((a: any, b: any) => a.ordem - b.ordem);
+            const requiredSlots = slots.filter((s: any) => !!s.categoria_produto);
+            const allRequiredFilled = requiredSlots.every((s: any) => !!kitSelecoes[s.id]);
+            const hasNoProdsSlots = requiredSlots.some((s: any) => (kitProdsDisponiveis[s.categoria_produto] || []).length === 0);
+            return (
+              <>
+                <DialogHeader className="px-4 pt-3 pb-3 border-b border-border shrink-0 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <Button type="button" variant="ghost" size="sm" className="-ml-1 h-7 px-2 text-xs"
+                      onClick={() => { setKitStep("list"); setKitSelecionadoRaw(null); setKitSelecoes({}); setKitBuscas({}); setKitFocused({}); setKitProdsDisponiveis({}); }}>
+                      ← Voltar
+                    </Button>
+                    <DialogTitle className="flex-1 text-base">{kitSelecionadoRaw?.nome}</DialogTitle>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {hasNoProdsSlots && (
+                      <p className="text-xs text-destructive flex-1">Alguns slots não têm produtos disponíveis.</p>
+                    )}
+                    <div className="flex gap-2 ml-auto">
+                      <Button size="sm" variant="outline" onClick={() => setKitDlg(false)}>Cancelar</Button>
+                      <Button size="sm" onClick={confirmKit} disabled={!allRequiredFilled || hasNoProdsSlots || kitProdsLoading}>
+                        Confirmar kit
+                      </Button>
+                    </div>
+                  </div>
+                </DialogHeader>
+                <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3">
+                  <div className="border border-border rounded-lg p-3 space-y-2 bg-muted/20">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Destino dos itens</p>
+                    <div>
+                      <Label className="text-xs mb-1 block">Ambiente</Label>
+                      <Select value={kitContexto.ambiente_id || ""} onValueChange={(v) => setKitContexto(prev => ({ ...prev, ambiente_id: v || null }))}>
+                        <SelectTrigger className="h-9"><SelectValue placeholder="—" /></SelectTrigger>
+                        <SelectContent>
+                          {ambientes.map((a: any) => <SelectItem key={a.id} value={a.id}>{a.nome}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {kitProdsLoading && (
+                    <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Carregando produtos...
+                    </div>
+                  )}
+                  {!kitProdsLoading && slots.map((slot: any) => {
+                    const prods = slot.categoria_produto ? (kitProdsDisponiveis[slot.categoria_produto] || []) : [];
+                    const semCategoria = !slot.categoria_produto;
+                    const semProdutos = !semCategoria && prods.length === 0;
+                    return (
+                      <div key={slot.id} className="border border-border rounded-lg p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <span className="font-medium text-sm">{slot.descricao}</span>
+                            <span className="ml-2 text-xs text-muted-foreground">×{slot.quantidade}</span>
+                          </div>
+                        </div>
+                        {semCategoria && (
+                          <p className="text-xs text-muted-foreground italic">Sem categoria configurada — configure na tela de Kits.</p>
+                        )}
+                        {semProdutos && (
+                          <p className="text-xs text-destructive">Nenhum produto em "{slot.categoria_produto}".</p>
+                        )}
+                        {!semCategoria && !semProdutos && (() => {
+                          const selectedId = kitSelecoes[slot.id];
+                          const selectedProd = selectedId ? prods.find((p: any) => p.id === selectedId) : null;
+                          const isFocused = kitFocused[slot.id] || false;
+                          const busca = kitBuscas[slot.id] || "";
+                          const inputValue = isFocused ? busca : (selectedProd ? (selectedProd.nome_fantasia || selectedProd.titulo) : "");
+                          const s = busca.toLowerCase().trim();
+                          const SINONIMOS_BYPASS = ["receiver", "receptor", "receptores"];
+                          const isSinonimo = s.length >= 3 && SINONIMOS_BYPASS.some(sin => sin.startsWith(s) || s.startsWith(sin));
+                          const filtrados = (s && !isSinonimo)
+                            ? prods.filter((p: any) =>
+                                (p.nome_fantasia || p.titulo || "").toLowerCase().includes(s) ||
+                                (p.titulo || "").toLowerCase().includes(s) ||
+                                (p.sku || "").toLowerCase().includes(s) ||
+                                (p.modelo || "").toLowerCase().includes(s)
+                              )
+                            : prods;
+                          const showDropdown = isFocused && (s !== "" || prods.length <= 8 || !selectedProd);
+                          return (
+                            <div className="space-y-1">
+                              <div className="relative">
+                                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                                <input
+                                  type="text"
+                                  className={`h-9 w-full rounded-md border border-input pl-8 ${selectedProd ? "pr-8 bg-muted/40" : "pr-3 bg-background"} text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring`}
+                                  placeholder={prods.length > 8 ? `Buscar entre ${prods.length} produtos...` : "Buscar produto..."}
+                                  value={inputValue}
+                                  onChange={(e) => setKitBuscas(prev => ({ ...prev, [slot.id]: e.target.value }))}
+                                  onFocus={() => {
+                                    setKitFocused(prev => ({ ...prev, [slot.id]: true }));
+                                    setKitBuscas(prev => ({ ...prev, [slot.id]: "" }));
+                                  }}
+                                  onBlur={() => {
+                                    setTimeout(() => {
+                                      setKitFocused(prev => ({ ...prev, [slot.id]: false }));
+                                      setKitBuscas(prev => ({ ...prev, [slot.id]: "" }));
+                                    }, 150);
+                                  }}
+                                />
+                                {selectedProd && (
+                                  <button
+                                    type="button"
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 z-10 rounded p-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => {
+                                      setKitSelecoes(prev => { const n = { ...prev }; delete n[slot.id]; return n; });
+                                      setKitBuscas(prev => ({ ...prev, [slot.id]: "" }));
+                                      setKitFocused(prev => ({ ...prev, [slot.id]: false }));
+                                    }}
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                              {selectedProd && !isFocused && (
+                                <p className="text-xs text-muted-foreground px-1">
+                                  {brl(Number(selectedProd.msrp))} / un.
+                                  {slot.quantidade > 1 && (
+                                    <span className="ml-2 font-medium text-foreground">
+                                      = {brl(slot.quantidade * Number(selectedProd.msrp))} total
+                                    </span>
+                                  )}
+                                </p>
+                              )}
+                              {showDropdown && (
+                                <div className="max-h-36 overflow-y-auto border border-border rounded-md bg-background text-sm divide-y divide-border/50">
+                                  {filtrados.length > 0 ? filtrados.map((p: any) => (
+                                    <button
+                                      key={p.id}
+                                      type="button"
+                                      className="w-full text-left px-3 py-1.5 hover:bg-accent flex items-center justify-between gap-2"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => {
+                                        setKitSelecoes(prev => ({ ...prev, [slot.id]: p.id }));
+                                        setKitBuscas(prev => ({ ...prev, [slot.id]: "" }));
+                                        setKitFocused(prev => ({ ...prev, [slot.id]: false }));
+                                      }}
+                                    >
+                                      <span className="truncate">{p.nome_fantasia || p.titulo}</span>
+                                      {p.msrp && (
+                                        <span className="text-xs text-muted-foreground shrink-0">
+                                          R$ {Number(p.msrp).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                                        </span>
+                                      )}
+                                    </button>
+                                  )) : (
+                                    <p className="px-3 py-2 text-xs text-muted-foreground">Nenhum produto encontrado.</p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
+
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: produto duplicado */}
+      <Dialog open={!!dupDlg?.open} onOpenChange={(o) => { if (!o) setDupDlg(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Novo segmento</DialogTitle>
-            <DialogDescription>Categorias de itens (ex.: Áudio, Vídeo, Automação).</DialogDescription>
+            <DialogTitle>Produto já adicionado</DialogTitle>
+            <DialogDescription>
+              <strong>{dupDlg?.produto?.titulo}</strong> já está na lista. Deseja adicionar novamente mesmo assim?
+            </DialogDescription>
           </DialogHeader>
-          <div>
-            <Label>Nome *</Label>
-            <Input autoFocus value={segNome} onChange={(e) => setSegNome(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveSegmento()} />
-          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSegDlg({ open: false, itemIdx: null })}>Cancelar</Button>
-            <Button onClick={saveSegmento}>Cadastrar</Button>
+            <Button variant="outline" onClick={() => setDupDlg(null)}>Cancelar</Button>
+            <Button onClick={() => {
+              if (dupDlg) { applyProduto(dupDlg.idx, dupDlg.produto); setDupDlg(null); }
+            }}>Adicionar mesmo assim</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -741,6 +1805,72 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           <DialogFooter>
             <Button variant="outline" onClick={() => setAmbDlg({ open: false, itemIdx: null })}>Cancelar</Button>
             <Button onClick={saveAmbiente}>Cadastrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bug #7 — Confirmação: sair sem salvar o orçamento */}
+      <Dialog open={unsavedDlg} onOpenChange={setUnsavedDlg}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Sair sem salvar?</DialogTitle>
+            <DialogDescription>
+              Você tem alterações não salvas. Se sair agora, os dados serão perdidos.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button className="w-full sm:w-auto" onClick={() => setUnsavedDlg(false)}>
+              Continuar editando
+            </Button>
+            <Button variant="outline" className="w-full sm:w-auto" onClick={() => { setUnsavedDlg(false); nav({ to: "/orcamentos" }); }}>
+              Sair sem salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bug #7 — Confirmação: fechar modal de novo cliente com dados preenchidos */}
+      <Dialog open={clienteUnsavedDlg} onOpenChange={setClienteUnsavedDlg}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Descartar dados do cliente?</DialogTitle>
+            <DialogDescription>
+              Os dados preenchidos serão perdidos. Deseja realmente fechar sem cadastrar?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button className="w-full sm:w-auto" onClick={() => setClienteUnsavedDlg(false)}>
+              Continuar preenchendo
+            </Button>
+            <Button variant="outline" className="w-full sm:w-auto" onClick={() => {
+              setClienteUnsavedDlg(false);
+              setClienteDlg(false);
+              setClienteForm({ nome_razao_social: "", cpf_cnpj: "", telefone: "", celular: "", email: "", endereco: "", bairro: "", cidade: "", estado: "", cep: "", endereco_instalacao: "", arquiteto_id: "" });
+              setClienteEmailErr(false);
+              setClienteCepErr("");
+            }}>
+              Fechar e descartar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmação: itens sem produto ao gerar PDF */}
+      <Dialog open={emptyItemsDlg} onOpenChange={setEmptyItemsDlg}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Itens sem produto</DialogTitle>
+            <DialogDescription>
+              Existem itens sem produto selecionado. Deseja removê-los antes de gerar o PDF?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={() => setEmptyItemsDlg(false)}>
+              Cancelar
+            </Button>
+            <Button className="w-full sm:w-auto" onClick={confirmRemoveEmpty}>
+              Sim, remover e gerar PDF
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
 // Valores de produção — chave anon pública, seguro manter no código.
-const FALLBACK_URL = "https://cmmwqdyngvvikvcubqan.supabase.co";
-const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNtbXdxZHluZ3Z2aWt2Y3VicWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1MjI4NjMsImV4cCI6MjA5NDA5ODg2M30.ZMH_CLzrLIpDZuZbDMUrRLdyJGNSFypzuNcWbDImJns";
+const FALLBACK_URL = "https://ccdquqmuxvcadveaidyc.supabase.co";
+const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjZHF1cW11eHZjYWR2ZWFpZHljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAyMzY3MTEsImV4cCI6MjA5NTgxMjcxMX0.hC_BiyjHJCxMzzscCS74rMPvm1uvbvsPGv8l8Cg_a_c";
 
 function createSupabaseClient() {
   // Ordem de resolução:
