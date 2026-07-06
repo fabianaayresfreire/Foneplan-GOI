@@ -131,8 +131,14 @@ function ClientesPage() {
       setDeleteTarget(null);
       return;
     }
-    const { error } = await supabase.from("clientes").delete().eq("id", deleteTarget.id);
+    const { data: deleted, error } = await supabase
+      .from("clientes").delete().eq("id", deleteTarget.id).select("id");
     if (error) { toast.error(error.message); return; }
+    if (!deleted || deleted.length === 0) {
+      toast.error("Não foi possível excluir o cliente. Verifique as permissões.");
+      setDeleteTarget(null);
+      return;
+    }
     toast.success(`Cliente "${deleteTarget.nome}" excluído.`);
     setDeleteTarget(null);
     load();

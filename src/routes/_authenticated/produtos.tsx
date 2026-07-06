@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Edit, Search, Upload, Download, Trash2 } from "lucide-react";
+import { Plus, Edit, Search, Upload, Download, Trash2, Copy } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { brl } from "@/lib/format";
@@ -73,6 +73,10 @@ function Page() {
   const [edit, setEdit] = useState<any>(null);
   const [form, setForm] = useState<any>(empty);
   const [archiveTarget, setArchiveTarget] = useState<{ id: string; nome: string } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkInUse, setBulkInUse] = useState<Set<string>>(new Set());
+  const [bulkProcessing, setBulkProcessing] = useState(false);
 
   // ── Paginação ────────────────────────────────────────────────────────────────
   const PAGE_SIZE = 50;
@@ -167,6 +171,47 @@ function Page() {
   });
   const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated   = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  const allPageSelected  = paginated.length > 0 && paginated.every(r => selected.has(r.id));
+  const somePageSelected = !allPageSelected && paginated.some(r => selected.has(r.id));
+
+  const toggleSelect = (id: string) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const toggleSelectAll = () => {
+    if (allPageSelected) {
+      setSelected(prev => { const next = new Set(prev); paginated.forEach(r => next.delete(r.id)); return next; });
+    } else {
+      setSelected(prev => { const next = new Set(prev); paginated.forEach(r => next.add(r.id)); return next; });
+    }
+  };
+
+  const openBulkConfirm = async () => {
+    const ids = [...selected];
+    const { data } = await supabase.from("orcamento_itens").select("produto_id").in("produto_id", ids);
+    setBulkInUse(new Set((data || []).map((r: any) => r.produto_id as string)));
+    setBulkConfirmOpen(true);
+  };
+
+  const doBulkDelete = async () => {
+    setBulkProcessing(true);
+    const ids = [...selected];
+    const toArchive = ids.filter(id => bulkInUse.has(id));
+    const toDelete  = ids.filter(id => !bulkInUse.has(id));
+    if (toArchive.length) await supabase.from("produtos").update({ status: false }).in("id", toArchive);
+    if (toDelete.length)  await supabase.from("produtos").delete().in("id", toDelete);
+    setBulkProcessing(false);
+    setBulkConfirmOpen(false);
+    setSelected(new Set());
+    const parts: string[] = [];
+    if (toArchive.length) parts.push(`${toArchive.length} arquivado${toArchive.length !== 1 ? "s" : ""}`);
+    if (toDelete.length)  parts.push(`${toDelete.length} excluído${toDelete.length !== 1 ? "s" : ""} permanentemente`);
+    toast.success(parts.join(" · ") || "Concluído");
+    load();
+  };
 
   const downloadTemplate = () => {
     const ws = XLSX.utils.aoa_to_sheet([
@@ -351,10 +396,27 @@ function Page() {
         </p>
       )}
 
+      {/* Barra de ação em lote */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2 mb-2 bg-primary/5 border border-primary/20 rounded-lg">
+          <span className="text-sm font-medium">{selected.size} produto{selected.size !== 1 ? "s" : ""} selecionado{selected.size !== 1 ? "s" : ""}</span>
+          <Button size="sm" variant="destructive" onClick={openBulkConfirm}>
+            <Trash2 className="h-4 w-4 mr-1" />Excluir {selected.size} selecionado{selected.size !== 1 ? "s" : ""}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Cancelar seleção</Button>
+        </div>
+      )}
+
       <Card>
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={allPageSelected ? true : somePageSelected ? "indeterminate" : false}
+                  onCheckedChange={toggleSelectAll}
+                />
+              </TableHead>
               <TableHead>SKU</TableHead>
               <TableHead>Título</TableHead>
               <TableHead>Marca / Modelo</TableHead>
@@ -366,7 +428,7 @@ function Page() {
           </TableHeader>
           <TableBody>
             {filtered.length === 0 && (
-              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Nenhum produto.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Nenhum produto.</TableCell></TableRow>
             )}
             {(() => {
               // Agrupa por categoria mantendo a ordem já vinda do banco (categoria → titulo)
@@ -379,12 +441,15 @@ function Page() {
               });
               return groups.flatMap(({ cat, items }) => [
                 <TableRow key={`cat-${cat}`}>
-                  <TableCell colSpan={7} className="bg-muted/60 py-1.5 px-4 font-semibold text-xs uppercase tracking-wider text-muted-foreground">
+                  <TableCell colSpan={8} className="bg-muted/60 py-1.5 px-4 font-semibold text-xs uppercase tracking-wider text-muted-foreground">
                     {cat}
                   </TableCell>
                 </TableRow>,
                 ...items.map(r => (
                   <TableRow key={r.id}>
+                    <TableCell className="w-10">
+                      <Checkbox checked={selected.has(r.id)} onCheckedChange={() => toggleSelect(r.id)} />
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{r.sku || "—"}</TableCell>
                     <TableCell className="font-medium">{r.titulo}</TableCell>
                     <TableCell>{[r.marca, r.modelo].filter(Boolean).join(" · ") || "—"}</TableCell>
@@ -394,6 +459,7 @@ function Page() {
                     <TableCell>
                       <div className="flex gap-1">
                         <Button size="icon" variant="ghost" onClick={() => { setEdit(r); setForm({ ...empty, ...r }); setOpen(true); }}><Edit className="h-4 w-4" /></Button>
+                        <Button size="icon" variant="ghost" title="Duplicar" onClick={() => { const { id: _id, ...rest } = r; setEdit(null); setForm({ ...empty, ...rest, sku: "", titulo: r.titulo + " (cópia)" }); setOpen(true); }}><Copy className="h-4 w-4" /></Button>
                         <Button size="icon" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => setArchiveTarget({ id: r.id, nome: r.titulo })}><Trash2 className="h-4 w-4" /></Button>
                       </div>
                     </TableCell>
@@ -441,6 +507,32 @@ function Page() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setArchiveTarget(null)}>Cancelar</Button>
             <Button variant="destructive" onClick={doArchive}>Excluir</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de confirmação de exclusão em lote */}
+      <Dialog open={bulkConfirmOpen} onOpenChange={(o) => { if (!o) setBulkConfirmOpen(false); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Excluir {selected.size} produto{selected.size !== 1 ? "s" : ""}</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-1 text-sm text-muted-foreground">
+                {bulkInUse.size > 0 && (
+                  <p><strong>{bulkInUse.size}</strong> produto{bulkInUse.size !== 1 ? "s estão" : " está"} em orçamentos existentes e {bulkInUse.size !== 1 ? "serão arquivados" : "será arquivado"} (oculto em novos orçamentos).</p>
+                )}
+                {(selected.size - bulkInUse.size) > 0 && (
+                  <p><strong>{selected.size - bulkInUse.size}</strong> produto{(selected.size - bulkInUse.size) !== 1 ? "s serão excluídos" : " será excluído"} permanentemente.</p>
+                )}
+                <p className="pt-1">Esta ação não pode ser desfeita.</p>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkConfirmOpen(false)} disabled={bulkProcessing}>Cancelar</Button>
+            <Button variant="destructive" onClick={doBulkDelete} disabled={bulkProcessing}>
+              {bulkProcessing ? "Processando..." : "Confirmar"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

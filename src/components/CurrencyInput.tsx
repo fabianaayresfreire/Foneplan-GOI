@@ -19,6 +19,7 @@ export function CurrencyInput({ value, onChange, ...rest }: Props) {
       {...rest}
       inputMode="numeric"
       value={formatBRL(cents)}
+      onFocus={(e) => e.target.select()}
       onChange={(e) => {
         const digits = e.target.value.replace(/\D/g, "");
         const newCents = digits === "" ? 0 : parseInt(digits, 10);

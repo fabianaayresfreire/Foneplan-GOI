@@ -16,6 +16,7 @@ export type Produto = {
   modelo?: string | null;
   unidade?: string | null;
   msrp?: number | null;
+  categoria?: string | null;
 };
 
 /** Retorna "SKU — Nome Fantasia" se disponível, senão o título. */
@@ -110,7 +111,7 @@ export function ProdutoCombobox({
 
       let q = supabase
         .from("produtos")
-        .select("id,titulo,nome_fantasia,sku,marca,modelo,unidade,msrp", { count: "exact" })
+        .select("id,titulo,nome_fantasia,sku,marca,modelo,unidade,msrp,categoria", { count: "exact" })
         .eq("status", true)
         .order("titulo")
         .range(activePage * PAGE_SIZE, (activePage + 1) * PAGE_SIZE - 1);
@@ -145,12 +146,13 @@ export function ProdutoCombobox({
           type="button"
           variant="outline"
           role="combobox"
-          className="w-full justify-between font-normal h-9"
+          title={selectedLabel ?? undefined}
+          className="w-full justify-between font-normal min-h-9 h-auto py-1.5"
         >
-          <span className="truncate text-left">
+          <span className="whitespace-normal break-words text-left">
             {selectedLabel || (value ? "Produto selecionado" : placeholder || "Selecionar produto...")}
           </span>
-          <ChevronsUpDown className="h-4 w-4 opacity-50 shrink-0 ml-2" />
+          <ChevronsUpDown className="h-4 w-4 opacity-50 shrink-0 ml-2 self-start mt-0.5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="p-0 w-[min(420px,calc(100vw-16px))] flex flex-col max-h-[70vh]" align="start">

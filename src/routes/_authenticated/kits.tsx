@@ -11,8 +11,9 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Edit, Trash2, Upload, Download, X } from "lucide-react";
+import { Plus, Edit, Archive, Upload, Download, X } from "lucide-react";
 import { toast } from "sonner";
+import { ProdutoCombobox, produtoLabel } from "@/components/ProdutoCombobox";
 
 export const Route = createFileRoute("/_authenticated/kits")({
   beforeLoad: async () => {
@@ -25,8 +26,8 @@ export const Route = createFileRoute("/_authenticated/kits")({
 });
 
 // ── Tipos e helpers ─────────────────────────────────────────────────────────
-type KitItem = { descricao: string; produto_codigo: string; quantidade: number; categoria_produto: string };
-const emptyItem = (): KitItem => ({ descricao: "", produto_codigo: "", quantidade: 1, categoria_produto: "" });
+type KitItem = { descricao: string; produto_codigo: string; quantidade: number; categoria_produto: string; produto_id?: string | null };
+const emptyItem = (): KitItem => ({ descricao: "", produto_codigo: "", quantidade: 1, categoria_produto: "", produto_id: null });
 
 const norm = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
 const COL_MAP: Record<string, string> = {
@@ -320,10 +321,10 @@ function Page() {
                     </Button>
                     <Button
                       size="icon" variant="ghost"
-                      className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                      className="text-muted-foreground hover:text-foreground"
                       onClick={() => setArchiveTarget({ id: kit.id, nome: kit.nome })}
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Archive className="h-4 w-4" />
                     </Button>
                   </div>
                 </TableCell>
@@ -408,11 +409,15 @@ function Page() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
                     <tr>
-                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Descrição *</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">
+                        {form.tipo === "fechado" ? "Produto *" : "Descrição *"}
+                      </th>
                       {form.tipo === "aberto" && (
                         <th className="text-left px-2 py-2 text-xs font-medium text-muted-foreground w-36">Categoria do produto</th>
                       )}
-                      <th className="text-left px-2 py-2 text-xs font-medium text-muted-foreground w-28">Código (SKU)</th>
+                      {form.tipo === "aberto" && (
+                        <th className="text-left px-2 py-2 text-xs font-medium text-muted-foreground w-28">Código (SKU)</th>
+                      )}
                       <th className="text-center px-2 py-2 text-xs font-medium text-muted-foreground w-16">Qtd</th>
                       <th className="w-10"></th>
                     </tr>
@@ -421,13 +426,34 @@ function Page() {
                     {formItens.map((it, idx) => (
                       <tr key={idx} className="border-t border-border/50">
                         <td className="px-3 py-2">
-                          <Input
-                            className="h-8 text-sm" value={it.descricao}
-                            placeholder="Ex.: Caixa de som"
-                            onChange={(e) => setFormItens(arr =>
-                              arr.map((x, i) => i === idx ? { ...x, descricao: e.target.value } : x)
-                            )}
-                          />
+                          {form.tipo === "fechado" ? (
+                            <div>
+                              <ProdutoCombobox
+                                value={it.produto_id ?? null}
+                                selectedLabel={it.produto_id ? produtoLabel(it) : (it.produto_codigo || null)}
+                                placeholder="Selecionar produto do catálogo..."
+                                onSelect={(p) => setFormItens(arr =>
+                                  arr.map((x, i) => i === idx ? {
+                                    ...x,
+                                    produto_id: p.id,
+                                    descricao: p.titulo,
+                                    produto_codigo: p.sku || "",
+                                  } : x)
+                                )}
+                              />
+                              {it.produto_codigo && (
+                                <p className="text-[11px] text-muted-foreground mt-1 truncate">SKU: {it.produto_codigo}</p>
+                              )}
+                            </div>
+                          ) : (
+                            <Input
+                              className="h-8 text-sm" value={it.descricao}
+                              placeholder="Ex.: Caixa de som"
+                              onChange={(e) => setFormItens(arr =>
+                                arr.map((x, i) => i === idx ? { ...x, descricao: e.target.value } : x)
+                              )}
+                            />
+                          )}
                         </td>
                         {form.tipo === "aberto" && (
                           <td className="px-2 py-2">
@@ -445,15 +471,17 @@ function Page() {
                             </select>
                           </td>
                         )}
-                        <td className="px-2 py-2">
-                          <Input
-                            className="h-8 text-sm" value={it.produto_codigo}
-                            placeholder="FP-001"
-                            onChange={(e) => setFormItens(arr =>
-                              arr.map((x, i) => i === idx ? { ...x, produto_codigo: e.target.value } : x)
-                            )}
-                          />
-                        </td>
+                        {form.tipo === "aberto" && (
+                          <td className="px-2 py-2">
+                            <Input
+                              className="h-8 text-sm" value={it.produto_codigo}
+                              placeholder="FP-001"
+                              onChange={(e) => setFormItens(arr =>
+                                arr.map((x, i) => i === idx ? { ...x, produto_codigo: e.target.value } : x)
+                              )}
+                            />
+                          </td>
+                        )}
                         <td className="px-2 py-2">
                           <Input
                             type="number" min="1" step="1"
@@ -475,7 +503,7 @@ function Page() {
                     ))}
                     {formItens.length === 0 && (
                       <tr>
-                        <td colSpan={form.tipo === "aberto" ? 5 : 4} className="px-3 py-4 text-center text-sm text-muted-foreground">
+                        <td colSpan={form.tipo === "aberto" ? 5 : 3} className="px-3 py-4 text-center text-sm text-muted-foreground">
                           Nenhum item. Clique em "Adicionar item".
                         </td>
                       </tr>

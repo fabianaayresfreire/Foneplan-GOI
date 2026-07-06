@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { Plus, Trash2, Save, FileText, ArrowLeft, UserPlus, Loader2, Package, Wrench, Cable, ChevronsUpDown, Search, X, ChevronUp, ChevronDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { brl, STATUS_LABELS, TIPO_ITEM_LABELS, fmtOrcNum, fmtOrcNumV } from "@/lib/format";
+import { gerarPdfBlob, pdfFileName, abrirBlobPdf, type PdfItem, type PdfOrcamento } from "@/lib/pdf";
 import { produtoLabel } from "@/components/ProdutoCombobox";
 import { maskCpfCnpj, maskCep, maskPhone, fetchViaCep } from "@/lib/masks";
 import { useAuth } from "@/lib/auth";
@@ -134,6 +135,26 @@ const serializeItens = (arr: Item[]): string =>
     }))
   );
 
+/** Agrupa itens por (segmento_id + ambiente_id/ambiente_nome) ordenando grupos pelo menor
+ *  ordem_exibicao do grupo; dentro de cada grupo ordena por ordem_exibicao crescente.
+ *  mao_de_obra e cabos sempre ficam no final, ordenados entre si por ordem_exibicao. */
+function groupSortItens<T extends Pick<Item, "tipo_item"|"segmento_id"|"ambiente_id"|"ambiente_nome"|"ordem_exibicao">>(items: T[]): T[] {
+  const SPECIAL   = (tipo: string) => tipo === "mao_de_obra" || tipo === "cabos";
+  const groupKey  = (it: T) => `${it.segmento_id ?? ""}|||${it.ambiente_id ?? it.ambiente_nome ?? ""}`;
+  const normal    = items.filter(it => !SPECIAL(it.tipo_item));
+  const special   = items.filter(it =>  SPECIAL(it.tipo_item));
+  const groupMin: Record<string, number> = {};
+  for (const it of normal) {
+    const k = groupKey(it);
+    if (!(k in groupMin) || it.ordem_exibicao < groupMin[k]) groupMin[k] = it.ordem_exibicao;
+  }
+  const sortedNormal = [...normal].sort((a, b) => {
+    const d = groupMin[groupKey(a)] - groupMin[groupKey(b)];
+    return d !== 0 ? d : a.ordem_exibicao - b.ordem_exibicao;
+  });
+  return [...sortedNormal, ...[...special].sort((a, b) => a.ordem_exibicao - b.ordem_exibicao)];
+}
+
 const blankItem = (ordem: number): Item => ({
   segmento_id: null,
   ambiente_id: null,
@@ -198,6 +219,10 @@ function SegmentoCombobox({ value, segmentos, onChange, disabled }: {
   );
 }
 
+// Persiste a versão da sessão de edição mesmo quando o componente remonta (ex: volta do /pdf).
+// Limpo pelo OrcamentoIdPage ao desmontar (saída genuína do orçamento).
+export const sessaoVersaoMap = new Map<string, string>();
+
 export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string }) {
   const { user, isAdmin } = useAuth();
   const nav = useNavigate();
@@ -225,6 +250,8 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   });
 
   const [itens, setItens] = useState<Item[]>([]);
+  const [orcNumero, setOrcNumero] = useState<number | null>(null);
+  const [orcVersao, setOrcVersao] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errors, setErrors] = useState<Record<string, boolean>>({});
@@ -272,6 +299,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   // 2.3 — discount cap error
   const [descontoErr, setDescontoErr] = useState(false);
   const [descontoModo, setDescontoModo] = useState<"valor" | "pct">("valor");
+  // Percentual digitado pelo usuário — fonte da verdade quando !== null.
+  // null significa que o usuário digitou em R$ (ou ainda não editou).
+  const [descontoPct, setDescontoPct] = useState<number | null>(null);
 
   const [ambDlg, setAmbDlg] = useState<{ open: boolean; itemIdx: number | null }>({ open: false, itemIdx: null });
   const [ambNome, setAmbNome] = useState("");
@@ -293,6 +323,11 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   const [pdfOrderStep, setPdfOrderStep] = useState<"choice" | "reorder">("choice");
   const [pdfGrupos, setPdfGrupos] = useState<{ seg: string; amb: string }[]>([]);
   const [pdfNavId, setPdfNavId] = useState<string>("");
+  // ref: true = preview sem salvar, false = navegar para rota após save
+  const pdfPreviewModeRef = useRef(false);
+  // itens filtrados (sem linhas vazias) para usar na preview
+  const pdfPreviewItensRef = useRef<Item[]>([]);
+  const [visualizandoPdf, setVisualizandoPdf] = useState(false);
 
   // Dialog: itens sem produto ao gerar PDF
   const [emptyItemsDlg, setEmptyItemsDlg] = useState(false);
@@ -309,22 +344,19 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     });
   }, [itens]);
 
-  // Cabos e mão de obra sempre no final; itens normais ordenados por ordem_exibicao
-  const displayItens = useMemo(() => {
-    const SPECIAL = (tipo: string) => tipo === "mao_de_obra" || tipo === "cabos";
-    return itens
-      .map((it, _idx) => ({ ...it, _idx }))
-      .sort((a, b) => {
-        const aS = SPECIAL(a.tipo_item), bS = SPECIAL(b.tipo_item);
-        if (aS === bS) return a.ordem_exibicao - b.ordem_exibicao;
-        return aS ? 1 : -1;
-      });
-  }, [itens]);
+  // Agrupa por segmento+ambiente; mão de obra e cabos sempre no final
+  const displayItens = useMemo(() =>
+    groupSortItens(itens.map((it, _idx) => ({ ...it, _idx })))
+  , [itens]);
 
   // Bug #7 — dirty state
   const loadedRef = useRef(false);
   const originalItensRef = useRef<string>("");
+  const snapshotFormRef  = useRef<string>("");
   const [isDirty, setIsDirty] = useState(false);
+  const isDirtyRef      = useRef(false);
+  const reminderRef     = useRef<number | null>(null);
+  const saveRef         = useRef<() => void>(() => {});
   const [unsavedDlg, setUnsavedDlg] = useState(false);
   const [clienteUnsavedDlg, setClienteUnsavedDlg] = useState(false);
 
@@ -352,7 +384,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       if (orcamentoId) {
         const { data: orc } = await supabase.from("orcamentos").select("*").eq("id", orcamentoId).single();
         if (orc) {
-          setForm({
+          setOrcNumero(orc.numero_orcamento ?? null);
+          setOrcVersao(orc.versao ?? null);
+          const formData = {
             cliente_id: orc.cliente_id,
             nome_projeto: orc.nome_projeto,
             tipo_projeto: orc.tipo_projeto,
@@ -363,7 +397,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             garantia: orc.garantia || "",
             condicoes_pagamento: orc.condicoes_pagamento || "",
             desconto: Number(orc.desconto) || 0,
-          });
+          };
+          setForm(formData);
+          snapshotFormRef.current = JSON.stringify(formData);
         }
         const { data: its } = await supabase.from("orcamento_itens").select("*").eq("orcamento_id", orcamentoId).order("ordem_exibicao");
         const list = (its || []).map((it: any) => ({
@@ -397,6 +433,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     setIsDirty(true);
   }, [form, itens]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Mantém isDirtyRef em sincronia com o state (para uso no setInterval sem closure stale)
+  useEffect(() => { isDirtyRef.current = isDirty; }, [isDirty]);
+
   // Bug #7 — bloqueia fechar aba/recarregar quando há dados não salvos (desktop)
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -412,6 +451,14 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   );
   const valorFinal = Math.max(0, valorBruto - (Number(form.desconto) || 0));
 
+  // Quando o total bruto muda e o usuário havia digitado em %, recalcula o R$ do desconto.
+  useEffect(() => {
+    if (descontoPct === null) return;
+    const novoR = Math.round(valorBruto * descontoPct / 100 * 100) / 100;
+    setForm(f => ({ ...f, desconto: novoR }));
+    setDescontoErr(descontoPct > 30);
+  }, [valorBruto]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const updateItem = (idx: number, patch: Partial<Item>) => {
     setItens(arr => arr.map((it, i) => {
       if (i !== idx) return it;
@@ -423,7 +470,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
 
   const addItem = () => {
     // Se já existe uma linha sem produto, rola até ela em vez de criar outra
-    const emptyIdx = itens.findIndex(i => !i.produto_id && !i.produto_titulo.trim() && i.tipo_item !== "mao_de_obra");
+    const emptyIdx = itens.findIndex(i => !i.produto_id && !i.produto_titulo.trim() && i.tipo_item === "venda_normal");
     if (emptyIdx !== -1) {
       document
         .querySelector(`[data-item-idx="${emptyIdx}"]`)
@@ -438,34 +485,46 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   };
 
   const addMaoDeObra = () => {
+    const servicos = ambientes.find((a: any) => a.nome?.toLowerCase() === "serviços");
     pendingScrollIdx.current = itens.length;
     setItens(arr => [...arr, {
       ...blankItem(arr.length),
       tipo_item: "mao_de_obra",
+      ambiente_id: servicos?.id ?? null,
       produto_titulo: "Mão Obra - Instalação, responsabilidade técnica e acompanhamento",
     }]);
   };
 
   const addCabos = () => {
+    const servicos = ambientes.find((a: any) => a.nome?.toLowerCase() === "serviços");
     pendingScrollIdx.current = itens.length;
     setItens(arr => [...arr, {
       ...blankItem(arr.length),
       tipo_item: "cabos",
-      produto_titulo: "Conjunto de cabos adicionais p/interligações, conectores e terminais",
+      ambiente_id: servicos?.id ?? null,
+      produto_titulo: "",
     }]);
   };
 
   const removeItem = (idx: number) => setItens(arr => arr.filter((_, i) => i !== idx));
 
   const applyProduto = (idx: number, p: any) => {
-    updateItem(idx, {
+    const patch: Partial<Item> = {
       produto_id: p.id,
       produto_titulo: p.titulo,
       produto_sku: p.sku,
       nome_fantasia: p.nome_fantasia || null,
       unidade: p.unidade || "un",
       preco_unitario: Number(p.msrp) || 0,
-    });
+    };
+    // Se o item ainda não tem segmento, tenta inferir pela categoria do produto
+    if (!itens[idx]?.segmento_id && p.categoria) {
+      const match = segmentos.find(
+        (s: any) => s.nome?.trim().toLowerCase() === (p.categoria as string).trim().toLowerCase()
+      );
+      if (match) patch.segmento_id = match.id;
+    }
+    updateItem(idx, patch);
     setProdutoLabels(prev => ({ ...prev, [p.id]: produtoLabel(p) }));
   };
 
@@ -675,10 +734,18 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       const key = `${segNome}|||${ambNome}`;
       if (!seen.has(key)) { seen.add(key); groups.push({ seg: segNome, amb: ambNome }); }
     }
-    return groups;
+    // Consolida: pares do mesmo seg ficam adjacentes, ordem de 1ª aparição do seg preservada
+    const segOrder: string[] = [];
+    const segMap: Record<string, typeof groups> = {};
+    for (const g of groups) {
+      if (!segMap[g.seg]) { segOrder.push(g.seg); segMap[g.seg] = []; }
+      segMap[g.seg].push(g);
+    }
+    return segOrder.flatMap(seg => segMap[seg]);
   };
 
   const openPdfFlow = (id: string, items?: Item[]) => {
+    pdfPreviewModeRef.current = false;
     const grupos = extractGruposPdf(items ?? itens);
     if (grupos.length <= 1) {
       nav({ to: "/orcamentos/$id/pdf", params: { id }, search: {} });
@@ -698,12 +765,113 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
     setPdfOrderDlg(false);
   };
 
+  /** Gera PDF em memória com o estado atual da tela — sem salvar, sem tocar no banco. */
+  const gerarPreviewComGrupos = async (grupos: { seg: string; amb: string }[]) => {
+    setPdfOrderDlg(false);
+    setVisualizandoPdf(true);
+    try {
+      const groupOrderStr = grupos.length > 0
+        ? JSON.stringify(grupos.map(g => `${g.seg}|||${g.amb}`))
+        : undefined;
+
+      const activeItens = pdfPreviewItensRef.current;
+
+      // Três SELECTs de leitura — sem escrita no banco
+      const [orcRes, clienteRes, vendedorRes] = await Promise.all([
+        supabase.from("orcamentos")
+          .select("numero_orcamento, versao, created_at")
+          .eq("id", orcamentoId!)
+          .single(),
+        supabase.from("clientes")
+          .select("*, arquitetos(nome,empresa,telefone,email)")
+          .eq("id", form.cliente_id)
+          .single(),
+        supabase.from("profiles")
+          .select("nome,email,celular")
+          .eq("id", user!.id)
+          .single(),
+      ]);
+
+      if (!orcRes.data)    throw new Error("Orçamento não encontrado.");
+      if (!clienteRes.data) throw new Error("Cliente não encontrado.");
+
+      const pdfOrc: PdfOrcamento = {
+        numero_orcamento:   orcRes.data.numero_orcamento,
+        versao:             orcRes.data.versao,
+        status:             form.status,
+        desconto:           Number(form.desconto) || 0,
+        valor_final:        valorFinal,
+        condicoes_pagamento: form.condicoes_pagamento || null,
+        prazo:              form.prazo || null,
+        garantia:           form.garantia || null,
+        observacoes_cliente: form.observacoes_cliente || null,
+        created_at:         orcRes.data.created_at,
+        clientes:           clienteRes.data,
+      };
+
+      const pdfItens: PdfItem[] = activeItens.map(it => ({
+        segmento_nome: segmentos.find((s: any) => s.id === it.segmento_id)?.nome ?? "GERAL",
+        ambiente_nome: it.ambiente_nome ?? ambientes.find((a: any) => a.id === it.ambiente_id)?.nome ?? "GERAL",
+        nome_fantasia:  it.nome_fantasia ?? null,
+        produto_titulo: it.produto_titulo,
+        observacao:     it.observacao ?? null,
+        quantidade:     it.quantidade,
+        tipo_item:      it.tipo_item,
+        preco_unitario: it.preco_unitario,
+        valor_total:    it.valor_total,
+        desconto_item:  it.desconto_item,
+      }));
+
+      const blob = await gerarPdfBlob(pdfOrc, pdfItens, vendedorRes.data ?? null, groupOrderStr);
+      const nome = pdfFileName(clienteRes.data.nome_razao_social, orcRes.data.numero_orcamento, orcRes.data.versao);
+      abrirBlobPdf(blob, nome);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erro ao gerar PDF.");
+    } finally {
+      setVisualizandoPdf(false);
+    }
+  };
+
+  /** Abre visualização do PDF com o estado atual da tela — sem salvar. */
+  const visualizarPdf = () => {
+    if (!form.cliente_id) return toast.error("Selecione um cliente antes de visualizar o PDF.");
+    // Filtra itens vazios silenciosamente (não modifica o estado)
+    const cleanItens = itens.filter(it =>
+      it.tipo_item === "mao_de_obra" || it.tipo_item === "cabos" || it.produto_id || it.produto_titulo?.trim()
+    );
+    pdfPreviewModeRef.current = true;
+    pdfPreviewItensRef.current = cleanItens;
+    const grupos = extractGruposPdf(cleanItens);
+    if (grupos.length <= 1) {
+      gerarPreviewComGrupos(grupos);
+      return;
+    }
+    setPdfNavId(orcamentoId!);
+    setPdfGrupos(grupos);
+    setPdfOrderStep("choice");
+    setPdfOrderDlg(true);
+  };
+
   const movePdfGrupo = (i: number, dir: -1 | 1) => {
     const arr = [...pdfGrupos];
     const j = i + dir;
     if (j < 0 || j >= arr.length) return;
     [arr[i], arr[j]] = [arr[j], arr[i]];
     setPdfGrupos(arr);
+  };
+
+  // Reinicia (ou inicia) o timer de lembrete de alterações não salvas
+  const startReminder = () => {
+    if (reminderRef.current !== null) clearInterval(reminderRef.current);
+    reminderRef.current = window.setInterval(() => {
+      if (!isDirtyRef.current) return;
+      toast("Você tem alterações não salvas.", {
+        id: "unsaved-reminder",
+        description: "Salve para não perder o trabalho.",
+        action: { label: "Salvar agora", onClick: () => saveRef.current() },
+        duration: 30_000,
+      });
+    }, 5 * 60 * 1000);
   };
 
   const save = async (goPdf = false, overrideItens?: Item[]) => {
@@ -718,6 +886,19 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
         it => it.tipo_item !== "mao_de_obra" && it.tipo_item !== "cabos" && !it.produto_id && !it.produto_titulo?.trim()
       );
       if (empties.length > 0) { setEmptyItemsDlg(true); return; }
+    }
+
+    // Nada mudou desde a última carga/save — evita incrementar versão desnecessariamente.
+    // Usa refs para comparação determinística (sem depender do isDirty que tem race condition).
+    if (!isNew && !overrideItens) {
+      const itensToCheck = overrideItens ?? itens;
+      const formChanged  = JSON.stringify(form) !== snapshotFormRef.current;
+      const itensChanged = serializeItens(itensToCheck) !== originalItensRef.current;
+      if (!formChanged && !itensChanged) {
+        if (goPdf) openPdfFlow(orcamentoId!);
+        else toast.info("Nenhuma alteração para salvar.");
+        return;
+      }
     }
 
     // 2.3 — block save if discount exceeds 30 %
@@ -747,45 +928,45 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       id = data.id;
       numero = data.numero_orcamento;
     } else {
-      // Versionamento: nunca sobrescreve — cria nova versão com a próxima letra (A, B, C…)
-      const { data: currOrc } = await supabase
-        .from("orcamentos")
-        .select("numero_orcamento")
-        .eq("id", orcamentoId!)
-        .single();
-      if (!currOrc) { setSaving(false); return toast.error("Orçamento não encontrado."); }
-      numero = currOrc.numero_orcamento;
+      numero = orcNumero!;
 
-      // Determina a próxima letra disponível para esse número
-      const { data: todasVersoes } = await supabase
-        .from("orcamentos")
-        .select("versao")
-        .eq("numero_orcamento", numero!);
-      const LETRAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-      const usadas = (todasVersoes || [])
-        .map((v: any) => v.versao)
-        .filter((v: any): v is string => typeof v === "string" && v.length === 1);
-      const maxIdx = usadas.length === 0 ? -1 : Math.max(...usadas.map(l => LETRAS.indexOf(l)));
-      novaVersao = LETRAS[Math.min(maxIdx + 1, 25)] ?? "A";
+      // Versão de sessão: incrementa apenas na 1ª vez que salva após abrir a tela.
+      // Saves subsequentes (manual, lembrete ou retorno do /pdf) reutilizam a mesma letra.
+      if (sessaoVersaoMap.has(orcamentoId!)) {
+        novaVersao = sessaoVersaoMap.get(orcamentoId!)!;
+      } else {
+        const LETRAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const curIdx = orcVersao ? LETRAS.indexOf(orcVersao) : -1;
+        novaVersao = LETRAS[Math.min(curIdx + 1, 25)] ?? "A";
+        sessaoVersaoMap.set(orcamentoId!, novaVersao);
+      }
 
-      const { data: novoOrc, error: insErr } = await supabase
+      const { error: updErr } = await supabase
         .from("orcamentos")
-        .insert({ ...payload, numero_orcamento: numero, versao: novaVersao })
-        .select()
-        .single();
-      if (insErr) { setSaving(false); return toast.error(insErr.message); }
-      id = novoOrc.id;
+        .update({ ...payload, versao: novaVersao })
+        .eq("id", orcamentoId!);
+      if (updErr) { setSaving(false); return toast.error(updErr.message); }
+    }
+
+    // Para edição: substitui os itens existentes (delete + insert)
+    if (!isNew) {
+      const { error: delErr } = await supabase
+        .from("orcamento_itens")
+        .delete()
+        .eq("orcamento_id", id!);
+      if (delErr) { setSaving(false); return toast.error(delErr.message); }
     }
 
     if (itensToSave.length) {
-      const insertable = itensToSave.map((it, i) => ({
+      const sorted = groupSortItens([...itensToSave]);
+      const insertable = sorted.map((it, i) => ({
         orcamento_id: id!,
         segmento_id: it.segmento_id,
         ambiente_id: it.ambiente_id,
         ambiente_nome: it.ambiente_nome ?? null,
         kit_nome: it.kit_nome ?? null,
         produto_id: it.produto_id,
-        produto_titulo: it.produto_titulo || "Item",
+        produto_titulo: it.produto_titulo || (it.tipo_item === "venda_normal" ? "Item" : ""),
         produto_sku: it.produto_sku,
         quantidade: it.quantidade,
         unidade: it.unidade,
@@ -802,11 +983,27 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
 
     setSaving(false);
     setIsDirty(false);
+    if (numero != null) setOrcNumero(numero);
+    setOrcVersao(novaVersao);
+    // Atualiza snapshots para que um segundo save sem mudanças não incremente versão
+    snapshotFormRef.current  = JSON.stringify(form);
+    originalItensRef.current = serializeItens(itensToSave);
     const numDisplay = numero != null ? fmtOrcNumV(numero, novaVersao) : "";
     toast.success(numDisplay ? `Orçamento ${numDisplay} salvo` : "Orçamento salvo");
+    startReminder(); // reinicia o timer — próximo aviso só após 5 min do último save
     if (goPdf) openPdfFlow(id!, overrideItens);
+    else if (!isNew) { /* permanece na mesma página */ }
     else nav({ to: "/orcamentos/$id", params: { id: id! } });
   };
+
+  // Mantém saveRef apontando para o save atual para o interval não capturar closure stale
+  useEffect(() => { saveRef.current = () => save(); }); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Inicia o timer de lembrete ao montar; reinicia ao salvar (via startReminder dentro de save)
+  useEffect(() => {
+    startReminder();
+    return () => { if (reminderRef.current !== null) clearInterval(reminderRef.current); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div className="p-8 text-muted-foreground">Carregando...</div>;
 
@@ -823,6 +1020,11 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
             {isNew ? "Novo orçamento" : "Editar orçamento"}
           </h1>
+          {!isNew && orcNumero != null && (
+            <p className="text-base font-mono font-semibold text-primary mt-0.5">
+              #{fmtOrcNumV(orcNumero, orcVersao)}
+            </p>
+          )}
         </div>
         <div className="flex gap-2 sm:flex-row flex-wrap">
           <Button variant="outline" className="flex-1 sm:flex-initial" onClick={() => save(false)} disabled={saving}>
@@ -830,9 +1032,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             Salvar
           </Button>
           {!isNew && orcamentoId && (
-            <Button variant="outline" className="flex-1 sm:flex-initial" onClick={() => openPdfFlow(orcamentoId)}>
-              <FileText className="h-4 w-4 mr-2" />
-              <span className="hidden sm:inline">Baixar PDF</span>
+            <Button variant="outline" className="flex-1 sm:flex-initial" onClick={visualizarPdf} disabled={visualizandoPdf}>
+              {visualizandoPdf ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
+              <span className="hidden sm:inline">Visualizar PDF</span>
               <span className="sm:hidden">PDF</span>
             </Button>
           )}
@@ -957,7 +1159,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Segmento</Label>
-                <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} disabled={!!it.produto_id} />
+                <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id, produto_id: null, produto_titulo: "", produto_sku: null, nome_fantasia: null, unidade: "un", preco_unitario: 0 })} />
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Ambiente</Label>
@@ -1010,7 +1212,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Segmento</Label>
-                <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} disabled={!!it.produto_id} />
+                <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id, produto_id: null, produto_titulo: "", produto_sku: null, nome_fantasia: null, unidade: "un", preco_unitario: 0 })} />
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Ambiente</Label>
@@ -1025,15 +1227,33 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Produto</Label>
-                <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
+                {it.tipo_item === "cliente" ? (
+                  <Input
+                    className="h-9"
+                    placeholder="Nome do produto do cliente..."
+                    value={it.produto_titulo}
+                    title={it.produto_titulo || undefined}
+                    onChange={(e) => updateItem(idx, { produto_titulo: e.target.value, produto_id: null, produto_sku: null, nome_fantasia: null })}
+                  />
+                ) : (
+                  <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
+                )}
                 <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
               </div>
               <div>
                 <Label className="text-xs mb-1 block">Tipo</Label>
-                <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
+                <Select value={it.tipo_item} onValueChange={(v) => {
+                  const patch: Partial<Item> = { tipo_item: v };
+                  if (v === "cliente") {
+                    patch.produto_id = null; patch.produto_sku = null; patch.nome_fantasia = null;
+                  } else if (it.tipo_item === "cliente") {
+                    patch.produto_id = null; patch.produto_titulo = ""; patch.produto_sku = null; patch.nome_fantasia = null;
+                  }
+                  updateItem(idx, patch);
+                }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {Object.entries(TIPO_ITEM_LABELS).filter(([k]) => k !== "mao_de_obra").map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                    {Object.entries(TIPO_ITEM_LABELS).filter(([k]) => k !== "mao_de_obra" && k !== "cabos").map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -1126,7 +1346,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     <Input type="number" min="1" className="h-8 w-10 text-center text-xs p-1" value={it.ordem_exibicao} onChange={(e) => updateItem(idx, { ordem_exibicao: Math.max(1, Number(e.target.value) || 1) })} />
                   </TableCell>
                   <TableCell>
-                    <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id })} disabled={!!it.produto_id} />
+                    <SegmentoCombobox value={it.segmento_id} segmentos={segmentos} onChange={(id) => updateItem(idx, { segmento_id: id, produto_id: null, produto_titulo: "", produto_sku: null, nome_fantasia: null, unidade: "un", preco_unitario: 0 })} />
                   </TableCell>
                   <TableCell>
                     <Select value={it.ambiente_id || ""} onValueChange={(v) => { if (v === ADD_NEW) { setAmbDlg({ open: true, itemIdx: idx }); return; } updateItem(idx, { ambiente_id: v, ambiente_nome: null }); }}>
@@ -1139,19 +1359,39 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
-                    {it.kit_nome && (
-                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                        <Package className="h-2.5 w-2.5 shrink-0" />{it.kit_nome}
-                      </span>
+                    {it.tipo_item === "cliente" ? (
+                      <Input
+                        className="h-9 text-sm"
+                        placeholder="Nome do produto do cliente..."
+                        value={it.produto_titulo}
+                        title={it.produto_titulo || undefined}
+                        onChange={(e) => updateItem(idx, { produto_titulo: e.target.value, produto_id: null, produto_sku: null, nome_fantasia: null })}
+                      />
+                    ) : (
+                      <>
+                        <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
+                        {it.kit_nome && (
+                          <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                            <Package className="h-2.5 w-2.5 shrink-0" />{it.kit_nome}
+                          </span>
+                        )}
+                      </>
                     )}
                     <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
                   </TableCell>
                   <TableCell>
-                    <Select value={it.tipo_item} onValueChange={(v) => updateItem(idx, { tipo_item: v })}>
+                    <Select value={it.tipo_item} onValueChange={(v) => {
+                      const patch: Partial<Item> = { tipo_item: v };
+                      if (v === "cliente") {
+                        patch.produto_id = null; patch.produto_sku = null; patch.nome_fantasia = null;
+                      } else if (it.tipo_item === "cliente") {
+                        patch.produto_id = null; patch.produto_titulo = ""; patch.produto_sku = null; patch.nome_fantasia = null;
+                      }
+                      updateItem(idx, patch);
+                    }}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {Object.entries(TIPO_ITEM_LABELS).filter(([k]) => k !== "mao_de_obra").map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                        {Object.entries(TIPO_ITEM_LABELS).filter(([k]) => k !== "mao_de_obra" && k !== "cabos").map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </TableCell>
@@ -1198,10 +1438,12 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     <input
                       type="number" min="0" max="100" step="0.1"
                       className={`h-9 w-full rounded-md border bg-background px-3 pr-6 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring${descontoErr ? " border-destructive focus:ring-destructive" : " border-input"}`}
-                      value={valorBruto > 0 ? Number(((Number(form.desconto) / valorBruto) * 100).toFixed(2)) : 0}
+                      value={descontoPct !== null ? descontoPct : (valorBruto > 0 ? Number(((Number(form.desconto) / valorBruto) * 100).toFixed(2)) : 0)}
+                      onFocus={(e) => e.target.select()}
                       onChange={(e) => {
                         const pct = Math.min(100, Math.max(0, parseFloat(e.target.value) || 0));
                         const v = Math.round(valorBruto * pct / 100 * 100) / 100;
+                        setDescontoPct(pct);
                         setForm({ ...form, desconto: v });
                         setDescontoErr(pct > 30);
                       }}
@@ -1213,6 +1455,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     className={`w-32 text-right${descontoErr ? " border-destructive focus-visible:ring-destructive" : ""}`}
                     value={Number(form.desconto) || 0}
                     onChange={(v) => {
+                      setDescontoPct(null);
                       setForm({ ...form, desconto: v });
                       setDescontoErr(v > valorBruto * 0.30);
                     }}
@@ -1374,9 +1617,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           Salvar
         </Button>
         {!isNew && orcamentoId && (
-          <Button variant="outline" onClick={() => openPdfFlow(orcamentoId)}>
-            <FileText className="h-4 w-4 mr-2" />
-            <span className="hidden sm:inline">Baixar PDF</span>
+          <Button variant="outline" onClick={visualizarPdf} disabled={visualizandoPdf}>
+            {visualizandoPdf ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
+            <span className="hidden sm:inline">Visualizar PDF</span>
             <span className="sm:hidden">PDF</span>
           </Button>
         )}
@@ -1400,7 +1643,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                 <Button
                   size="lg"
                   className="w-full justify-start h-auto py-3 px-4"
-                  onClick={() => navigateToPdf([])}
+                  onClick={() => pdfPreviewModeRef.current ? gerarPreviewComGrupos([]) : navigateToPdf([])}
                 >
                   <FileText className="h-5 w-5 mr-3 shrink-0" />
                   <div className="text-left">
@@ -1435,7 +1678,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                 <DialogTitle>Personalizar ordem</DialogTitle>
                 <DialogDescription>Use as setas para definir a ordem dos blocos no PDF.</DialogDescription>
               </DialogHeader>
-              <div className="px-5 py-4 space-y-2 overflow-y-auto max-h-72">
+              <div className="px-5 py-4 space-y-2 overflow-y-auto max-h-[60vh]">
                 {pdfGrupos.map((g, i) => (
                   <div key={`${g.seg}|||${g.amb}`} className="flex items-center gap-2 p-2.5 border border-border rounded-lg bg-card">
                     <span className="flex-1 text-sm min-w-0">
@@ -1465,9 +1708,9 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
               </div>
               <DialogFooter className="px-5 py-3 border-t border-border">
                 <Button variant="outline" onClick={() => setPdfOrderDlg(false)}>Cancelar</Button>
-                <Button onClick={() => navigateToPdf(pdfGrupos)}>
+                <Button onClick={() => pdfPreviewModeRef.current ? gerarPreviewComGrupos(pdfGrupos) : navigateToPdf(pdfGrupos)}>
                   <FileText className="h-4 w-4 mr-2" />
-                  Gerar PDF
+                  {pdfPreviewModeRef.current ? "Visualizar PDF" : "Gerar PDF"}
                 </Button>
               </DialogFooter>
             </>
