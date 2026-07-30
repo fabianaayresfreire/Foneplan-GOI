@@ -19,11 +19,11 @@ export type Produto = {
   categoria?: string | null;
 };
 
-/** Retorna "SKU — Nome Fantasia" se disponível, senão o título. */
+/** Retorna "SKU — Nome Fantasia" se disponível, senão o título, senão o SKU. */
 export const produtoLabel = (p: Pick<Produto, "titulo" | "nome_fantasia" | "sku">): string =>
   p.nome_fantasia
     ? `${p.sku ? p.sku + " — " : ""}${p.nome_fantasia}`
-    : p.titulo;
+    : p.titulo || p.sku || "";
 
 const PAGE_SIZE = 50;
 

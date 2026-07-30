@@ -45,6 +45,10 @@ type Item = {
   tipo_item: string;
   observacao?: string | null;
   ordem_exibicao: number;
+  _prevProdutoId?: string | null;
+  _prevTitulo?: string;
+  _prevSku?: string | null;
+  _prevNomefantasia?: string | null;
 };
 
 // ── Kit definitions ────────────────────────────────────────────────────────────
@@ -132,6 +136,7 @@ const serializeItens = (arr: Item[]): string =>
       seg:   it.segmento_id  ?? null,
       amb:   it.ambiente_id  ?? null,
       obs:   it.observacao   ?? null,
+      ordem: it.ordem_exibicao,
     }))
   );
 
@@ -328,6 +333,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
   // itens filtrados (sem linhas vazias) para usar na preview
   const pdfPreviewItensRef = useRef<Item[]>([]);
   const [visualizandoPdf, setVisualizandoPdf] = useState(false);
+  const [visualizarAvisoDlg, setVisualizarAvisoDlg] = useState(false);
 
   // Dialog: itens sem produto ao gerar PDF
   const [emptyItemsDlg, setEmptyItemsDlg] = useState(false);
@@ -369,7 +375,15 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
         supabase.from("arquitetos").select("id,nome").eq("status", true).order("nome"),
       ]);
       setClientes(c.data || []);
-      setSegmentos(s.data || []);
+      // Ordem padrão dos segmentos no editor (não existe flag de ordem definida pelo usuário por ora).
+      // Segmentos fora da lista mantêm a ordem relativa que veio do banco.
+      const SEG_PRIO: Record<string, number> = { "automação": 1, "áudio e vídeo": 2, "rede wi-fi": 3, "aspiração": 4 };
+      const segsOrdenados = (s.data || []).slice().sort((a: any, b: any) => {
+        const pa = SEG_PRIO[a.nome?.toLowerCase()] ?? 999;
+        const pb = SEG_PRIO[b.nome?.toLowerCase()] ?? 999;
+        return pa !== pb ? pa - pb : (a.ordem ?? 0) - (b.ordem ?? 0);
+      });
+      setSegmentos(segsOrdenados);
       setAmbientes(a.data || []);
       setArqs(arq.data || []);
 
@@ -502,7 +516,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       ...blankItem(arr.length),
       tipo_item: "cabos",
       ambiente_id: servicos?.id ?? null,
-      produto_titulo: "",
+      produto_titulo: "Cabos, conectores e terminais necessários para instalação.",
     }]);
   };
 
@@ -1032,7 +1046,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
             Salvar
           </Button>
           {!isNew && orcamentoId && (
-            <Button variant="outline" className="flex-1 sm:flex-initial" onClick={visualizarPdf} disabled={visualizandoPdf}>
+            <Button variant="outline" className="flex-1 sm:flex-initial" onClick={() => setVisualizarAvisoDlg(true)} disabled={visualizandoPdf}>
               {visualizandoPdf ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
               <span className="hidden sm:inline">Visualizar PDF</span>
               <span className="sm:hidden">PDF</span>
@@ -1236,7 +1250,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     onChange={(e) => updateItem(idx, { produto_titulo: e.target.value, produto_id: null, produto_sku: null, nome_fantasia: null })}
                   />
                 ) : (
-                  <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
+                  <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo || it.produto_sku || null) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
                 )}
                 <Input className="mt-1 h-8 text-xs" placeholder="Observação (opcional)" value={it.observacao || ""} onChange={(e) => updateItem(idx, { observacao: e.target.value })} />
               </div>
@@ -1245,9 +1259,13 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                 <Select value={it.tipo_item} onValueChange={(v) => {
                   const patch: Partial<Item> = { tipo_item: v };
                   if (v === "cliente") {
+                    patch._prevProdutoId = it.produto_id; patch._prevTitulo = it.produto_titulo;
+                    patch._prevSku = it.produto_sku ?? null; patch._prevNomefantasia = it.nome_fantasia ?? null;
                     patch.produto_id = null; patch.produto_sku = null; patch.nome_fantasia = null;
                   } else if (it.tipo_item === "cliente") {
-                    patch.produto_id = null; patch.produto_titulo = ""; patch.produto_sku = null; patch.nome_fantasia = null;
+                    patch.produto_id = it._prevProdutoId ?? null; patch.produto_titulo = it._prevTitulo ?? "";
+                    patch.produto_sku = it._prevSku ?? null; patch.nome_fantasia = it._prevNomefantasia ?? null;
+                    patch._prevProdutoId = null; patch._prevTitulo = ""; patch._prevSku = null; patch._prevNomefantasia = null;
                   }
                   updateItem(idx, patch);
                 }}>
@@ -1369,7 +1387,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                       />
                     ) : (
                       <>
-                        <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
+                        <ProdutoCombobox value={it.produto_id} selectedLabel={it.produto_id ? (produtoLabels[it.produto_id] || it.produto_titulo || it.produto_sku || null) : null} categoriaFilter={segmentos.find(s => s.id === it.segmento_id)?.nome ?? null} onSelect={(p) => onPickProduto(idx, p)} />
                         {it.kit_nome && (
                           <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
                             <Package className="h-2.5 w-2.5 shrink-0" />{it.kit_nome}
@@ -1383,9 +1401,13 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                     <Select value={it.tipo_item} onValueChange={(v) => {
                       const patch: Partial<Item> = { tipo_item: v };
                       if (v === "cliente") {
+                        patch._prevProdutoId = it.produto_id; patch._prevTitulo = it.produto_titulo;
+                        patch._prevSku = it.produto_sku ?? null; patch._prevNomefantasia = it.nome_fantasia ?? null;
                         patch.produto_id = null; patch.produto_sku = null; patch.nome_fantasia = null;
                       } else if (it.tipo_item === "cliente") {
-                        patch.produto_id = null; patch.produto_titulo = ""; patch.produto_sku = null; patch.nome_fantasia = null;
+                        patch.produto_id = it._prevProdutoId ?? null; patch.produto_titulo = it._prevTitulo ?? "";
+                        patch.produto_sku = it._prevSku ?? null; patch.nome_fantasia = it._prevNomefantasia ?? null;
+                        patch._prevProdutoId = null; patch._prevTitulo = ""; patch._prevSku = null; patch._prevNomefantasia = null;
                       }
                       updateItem(idx, patch);
                     }}>
@@ -1418,7 +1440,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
         </div>
       </Card>
 
-      <Card className="p-4 md:p-6">
+      <Card className="p-4 md:p-6 mb-4">
         <div className="flex justify-end">
           <div className="w-full max-w-sm space-y-2">
             <div className="flex justify-between text-sm">
@@ -1475,6 +1497,22 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           </div>
         </div>
       </Card>
+
+      {/* Dialog: aviso antes de visualizar PDF */}
+      <Dialog open={visualizarAvisoDlg} onOpenChange={setVisualizarAvisoDlg}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Visualizar PDF</DialogTitle>
+            <DialogDescription>
+              Esta é apenas uma visualização. Lembre-se de salvar antes de finalizar.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 justify-end">
+            <Button variant="outline" onClick={() => setVisualizarAvisoDlg(false)}>Cancelar</Button>
+            <Button onClick={() => { setVisualizarAvisoDlg(false); visualizarPdf(); }}>Continuar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog: novo cliente */}
       <Dialog open={clienteDlg} onOpenChange={(o) => {
@@ -1617,7 +1655,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
           Salvar
         </Button>
         {!isNew && orcamentoId && (
-          <Button variant="outline" onClick={visualizarPdf} disabled={visualizandoPdf}>
+          <Button variant="outline" onClick={() => setVisualizarAvisoDlg(true)} disabled={visualizandoPdf}>
             {visualizandoPdf ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
             <span className="hidden sm:inline">Visualizar PDF</span>
             <span className="sm:hidden">PDF</span>
