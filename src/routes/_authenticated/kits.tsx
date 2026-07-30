@@ -26,7 +26,7 @@ export const Route = createFileRoute("/_authenticated/kits")({
 });
 
 // ── Tipos e helpers ─────────────────────────────────────────────────────────
-type KitItem = { descricao: string; produto_codigo: string; quantidade: number; categoria_produto: string; produto_id?: string | null };
+type KitItem = { descricao: string; produto_codigo: string; quantidade: number; categoria_produto: string; produto_id?: string | null; nome_fantasia?: string | null };
 const emptyItem = (): KitItem => ({ descricao: "", produto_codigo: "", quantidade: 1, categoria_produto: "", produto_id: null });
 
 const norm = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
@@ -65,7 +65,7 @@ function Page() {
     const [{ data: kitsData }, { data: prodsData }] = await Promise.all([
       supabase
         .from("kits")
-        .select("id, nome, categoria, status, tipo, kit_itens(id, descricao, produto_codigo, quantidade, ordem, categoria_produto)")
+        .select("id, nome, categoria, status, tipo, kit_itens(id, descricao, produto_codigo, produto_id, quantidade, ordem, categoria_produto)")
         .order("nome"),
       supabase.from("produtos").select("modelo").not("modelo", "is", null).eq("status", true),
     ]);
@@ -101,6 +101,8 @@ function Page() {
             produto_codigo: it.produto_codigo || "",
             quantidade: it.quantidade,
             categoria_produto: it.categoria_produto || "",
+            produto_id: it.produto_id ?? null,
+            nome_fantasia: it.nome_fantasia ?? null,
           }))
         : [emptyItem()]
     );
@@ -430,7 +432,7 @@ function Page() {
                             <div>
                               <ProdutoCombobox
                                 value={it.produto_id ?? null}
-                                selectedLabel={it.produto_id ? produtoLabel(it) : (it.produto_codigo || null)}
+                                selectedLabel={it.produto_id ? produtoLabel({ titulo: it.descricao, nome_fantasia: it.nome_fantasia ?? null, sku: it.produto_codigo || null }) : (it.produto_codigo || null)}
                                 placeholder="Selecionar produto do catálogo..."
                                 onSelect={(p) => setFormItens(arr =>
                                   arr.map((x, i) => i === idx ? {
@@ -438,6 +440,7 @@ function Page() {
                                     produto_id: p.id,
                                     descricao: p.titulo,
                                     produto_codigo: p.sku || "",
+                                    nome_fantasia: p.nome_fantasia ?? null,
                                   } : x)
                                 )}
                               />
