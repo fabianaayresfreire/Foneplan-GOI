@@ -229,6 +229,11 @@ function SegmentoCombobox({ value, segmentos, onChange, disabled }: {
 export const sessaoVersaoMap = new Map<string, string>();
 
 const SEG_PRIO: Record<string, number> = { "automação": 1, "áudio e vídeo": 2, "rede wi-fi": 3, "aspiração": 4 };
+const getSegPrio = (lower: string): number => {
+  if (SEG_PRIO[lower] !== undefined) return SEG_PRIO[lower];
+  const match = Object.entries(SEG_PRIO).find(([k]) => lower.startsWith(k));
+  return match ? match[1] : 999;
+};
 
 export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string }) {
   const { user, isAdmin } = useAuth();
@@ -378,8 +383,8 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       ]);
       setClientes(c.data || []);
       const segsOrdenados = (s.data || []).slice().sort((a: any, b: any) => {
-        const pa = SEG_PRIO[a.nome?.toLowerCase()] ?? 999;
-        const pb = SEG_PRIO[b.nome?.toLowerCase()] ?? 999;
+        const pa = getSegPrio(a.nome?.toLowerCase() ?? "");
+        const pb = getSegPrio(b.nome?.toLowerCase() ?? "");
         return pa !== pb ? pa - pb : (a.ordem ?? 0) - (b.ordem ?? 0);
       });
       setSegmentos(segsOrdenados);
@@ -754,11 +759,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       if (!segMap[g.seg]) { segOrder.push(g.seg); segMap[g.seg] = []; }
       segMap[g.seg].push(g);
     }
-    segOrder.sort((a, b) => {
-      const pa = SEG_PRIO[a.toLowerCase()] ?? 999;
-      const pb = SEG_PRIO[b.toLowerCase()] ?? 999;
-      return pa - pb;
-    });
+    segOrder.sort((a, b) => getSegPrio(a.toLowerCase()) - getSegPrio(b.toLowerCase()));
     return segOrder.flatMap(seg => segMap[seg]);
   };
 
