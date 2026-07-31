@@ -228,6 +228,8 @@ function SegmentoCombobox({ value, segmentos, onChange, disabled }: {
 // Limpo pelo OrcamentoIdPage ao desmontar (saída genuína do orçamento).
 export const sessaoVersaoMap = new Map<string, string>();
 
+const SEG_PRIO: Record<string, number> = { "automação": 1, "áudio e vídeo": 2, "rede wi-fi": 3, "aspiração": 4 };
+
 export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string }) {
   const { user, isAdmin } = useAuth();
   const nav = useNavigate();
@@ -375,9 +377,6 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
         supabase.from("arquitetos").select("id,nome").eq("status", true).order("nome"),
       ]);
       setClientes(c.data || []);
-      // Ordem padrão dos segmentos no editor (não existe flag de ordem definida pelo usuário por ora).
-      // Segmentos fora da lista mantêm a ordem relativa que veio do banco.
-      const SEG_PRIO: Record<string, number> = { "automação": 1, "áudio e vídeo": 2, "rede wi-fi": 3, "aspiração": 4 };
       const segsOrdenados = (s.data || []).slice().sort((a: any, b: any) => {
         const pa = SEG_PRIO[a.nome?.toLowerCase()] ?? 999;
         const pb = SEG_PRIO[b.nome?.toLowerCase()] ?? 999;
@@ -755,6 +754,11 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
       if (!segMap[g.seg]) { segOrder.push(g.seg); segMap[g.seg] = []; }
       segMap[g.seg].push(g);
     }
+    segOrder.sort((a, b) => {
+      const pa = SEG_PRIO[a.toLowerCase()] ?? 999;
+      const pb = SEG_PRIO[b.toLowerCase()] ?? 999;
+      return pa - pb;
+    });
     return segOrder.flatMap(seg => segMap[seg]);
   };
 
@@ -1681,7 +1685,7 @@ export default function OrcamentoEditor({ orcamentoId }: { orcamentoId?: string 
                 <Button
                   size="lg"
                   className="w-full justify-start h-auto py-3 px-4"
-                  onClick={() => pdfPreviewModeRef.current ? gerarPreviewComGrupos([]) : navigateToPdf([])}
+                  onClick={() => pdfPreviewModeRef.current ? gerarPreviewComGrupos(pdfGrupos) : navigateToPdf(pdfGrupos)}
                 >
                   <FileText className="h-5 w-5 mr-3 shrink-0" />
                   <div className="text-left">
